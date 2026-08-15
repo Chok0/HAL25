@@ -8,6 +8,8 @@ tous "musicaux", sans table de patterns ecrite a la main.
 
 from __future__ import annotations
 
+import math
+
 
 def euclidean_pattern(steps: int, pulses: int, rotation: int = 0) -> list[bool]:
     """Motif de Bjorklund : `pulses` impulsions reparties sur `steps` pas.
@@ -57,8 +59,15 @@ def _bjorklund(steps: int, pulses: int) -> list[bool]:
 
 
 def pulses_for_density(density: float, minimum: int, maximum: int) -> int:
-    """Interpole un nombre d'impulsions a partir d'une densite dans [0, 1]."""
+    """Interpole un nombre d'impulsions a partir d'une densite dans [0, 1].
+
+    L'arrondi est explicitement "au superieur a mi-chemin" (0.5 -> 1) et non
+    l'arrondi bancaire de `round()` en Python (0.5 -> 0). C'est le meme que
+    `Math.round` en JavaScript : les deux implementations doivent produire
+    exactement le meme motif pour la meme densite, sans quoi elles derivent
+    silencieusement l'une de l'autre.
+    """
     if minimum > maximum:
         raise ValueError("minimum doit etre <= maximum")
     density = min(1.0, max(0.0, density))
-    return int(round(minimum + density * (maximum - minimum)))
+    return int(math.floor(minimum + density * (maximum - minimum) + 0.5))

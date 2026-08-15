@@ -8,11 +8,48 @@ Tout tourne en local, aucun traitement cloud.
 
 Implémentation de la note de cadrage [`note-de-cadrage-jam-guitare.pdf`](note-de-cadrage-jam-guitare.pdf).
 
+Deux versions, même chaîne d'analyse :
+
 ```
 guitare ──▶ analyse Python ──OSC──▶ synthèse SuperCollider ──▶ drone + rythme
             chroma / tonalité              drones, percus
             attaques / énergie             faible latence
+
+guitare ──▶ page web autonome ──▶ drone + rythme          (web/index.html)
+            Web Audio, zéro dépendance, rien à installer
 ```
+
+## Version web
+
+`web/index.html` fait tourner toute la chaîne dans le navigateur — l'alternative
+Web Audio envisagée au cadrage. Un seul fichier, aucune dépendance, aucun
+serveur de traitement : ouvrez, jouez.
+
+```bash
+cd web && python -m http.server 8000   # le micro exige https ou localhost
+```
+
+puis <http://localhost:8000>. Le bouton **Démo** joue une guitare de synthèse
+interne et fonctionne partout, même sans micro — l'équivalent de `--source synth`.
+
+À jouer au casque : sur haut-parleurs, le drone se réinjecte dans le micro et
+finit par entretenir sa propre tonalité.
+
+La version web reprend les constantes calibrées et les algorithmes du paquet
+Python, et `tests/test_web.py` le vérifie dans un vrai Chromium : motifs
+euclidiens, corrélations K-S, projection du chroma et seuils sont confrontés
+aux **mêmes valeurs de référence** que la version Python. C'est ce qui empêche
+les deux implémentations de diverger en silence.
+
+Deux différences assumées, imposées par le contexte navigateur :
+
+- le pas d'analyse est celui de `requestAnimationFrame` (~16 ms) et non un hop
+  fixe de 5.8 ms ; toutes les constantes de temps sont donc exprimées en
+  secondes et converties avec le `dt` réellement mesuré, ce qui rend l'analyse
+  indépendante de la cadence d'affichage ;
+- le rythme est planifié sur l'horloge audio avec anticipation, donc posé à
+  l'échantillon près — la gigue signalée comme limite connue de la version
+  Python (datation côté Python + UDP) disparaît ici.
 
 ## Démarrage rapide
 
@@ -157,11 +194,18 @@ une prise enregistrée, pas à jouer en direct.
 pip install -e ".[dev]" && pytest
 ```
 
-218 tests, ~12 s, sans matériel audio. Ils couvrent les motifs euclidiens
+255 tests, ~33 s, sans matériel audio. Ils couvrent les motifs euclidiens
 (contre les valeurs de référence connues : tresillo, cinquillo…), la détection
 de tonalité, l'hystérésis, la détection d'attaques (jeu doux/fort, note tenue,
 rumble, temps mort), les filtres, le protocole OSC sur une vraie socket UDP, et
 la chaîne complète du signal jusqu'aux messages.
+
+Les tests de parité web (`tests/test_web.py`) pilotent un Chromium sans
+interface ; ils sont ignorés si Playwright n'est pas installé :
+
+```bash
+pip install playwright && playwright install chromium
+```
 
 ## Hors scope v0
 
