@@ -2,10 +2,8 @@ name: Déploie la version web sur GitHub Pages
 
 # Publie le contenu de web/ à la racine du site, soit https://<user>.github.io/HAL25/
 #
-# Prérequis, à faire une fois dans Settings > Pages du dépôt :
-#   Source = "GitHub Actions"
-# Tant que ce réglage n'est pas fait, ce workflow échoue au déploiement et
-# rien n'est publié.
+# Le workflow active Pages lui-même (`enablement: true` plus bas) : aucun
+# réglage préalable n'est nécessaire dans Settings > Pages.
 #
 # Servir la page en HTTPS n'est pas cosmétique : getUserMedia (le micro) exige
 # une origine sûre, donc l'appli n'est réellement jouable que depuis une URL
@@ -41,7 +39,15 @@ jobs:
       - name: Vérifie que la page est bien là
         run: test -f web/index.html
 
-      - uses: actions/configure-pages@v5
+      - name: Configure Pages (et l'active si besoin)
+        uses: actions/configure-pages@v5
+        with:
+          # Sans ce drapeau, l'action se contente de *lire* la configuration
+          # Pages du dépôt et échoue avec "Get Pages site failed - Not Found"
+          # tant que personne n'a basculé Settings > Pages sur "GitHub
+          # Actions" à la main. Avec, elle crée le site elle-même au premier
+          # passage (le `pages: write` ci-dessus lui en donne le droit).
+          enablement: true
 
       - name: Prépare l'artefact
         # web/ devient la racine du site : l'appli est à l'URL du dépôt,
