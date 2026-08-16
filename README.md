@@ -32,6 +32,23 @@ cd web && python -m http.server 8000   # le micro exige https ou localhost
 puis <http://localhost:8000>. Le bouton **Démo** joue une guitare de synthèse
 interne et fonctionne partout, même sans micro — l'équivalent de `--source synth`.
 
+### Publier sur GitHub Pages
+
+Pages sert en HTTPS, donc le micro y fonctionne : c'est le bon hébergement pour
+cette appli. Le workflow [`.github/workflows/pages.yml`](.github/workflows/pages.yml)
+publie `web/` à la racine du site. Il reste **un réglage à faire à la main**,
+une seule fois :
+
+> `Settings` → `Pages` → **Source : GitHub Actions**
+
+Le workflow se déclenche ensuite sur chaque push vers `main` touchant `web/`
+(ou à la demande, via `Run workflow`). L'appli est alors sur
+`https://<utilisateur>.github.io/HAL25/`.
+
+Tant que ce réglage n'est pas fait, rien n'est publié et le workflow échoue au
+moment du déploiement. Il faut aussi que le workflow soit présent sur `main` :
+sur une branche de travail, il ne se déclenche pas.
+
 À jouer au casque : sur haut-parleurs, le drone se réinjecte dans le micro et
 finit par entretenir sa propre tonalité.
 
