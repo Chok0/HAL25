@@ -1,0 +1,54 @@
+name: Déploie la version web sur GitHub Pages
+
+# Publie le contenu de web/ à la racine du site, soit https://<user>.github.io/HAL25/
+#
+# Prérequis, à faire une fois dans Settings > Pages du dépôt :
+#   Source = "GitHub Actions"
+# Tant que ce réglage n'est pas fait, ce workflow échoue au déploiement et
+# rien n'est publié.
+#
+# Servir la page en HTTPS n'est pas cosmétique : getUserMedia (le micro) exige
+# une origine sûre, donc l'appli n'est réellement jouable que depuis une URL
+# https ou localhost.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Un seul déploiement à la fois ; on ne coupe pas celui qui est en cours.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérifie que la page est bien là
+        run: test -f web/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - name: Prépare l'artefact
+        # web/ devient la racine du site : l'appli est à l'URL du dépôt,
+        # sans /web/ dans le chemin.
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

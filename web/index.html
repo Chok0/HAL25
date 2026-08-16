@@ -1,0 +1,1123 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>halj — jam génératif</title>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --panel: #161a23;
+    --panel-2: #1d2230;
+    --line: #2a3142;
+    --text: #e6e9f0;
+    --dim: #8a93a8;
+    --accent: #7cc6ff;
+    --hot: #ff8a5c;
+    --ok: #5ad19b;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px 48px;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; }
+  header { margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--dim); font-size: 14px; }
+
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 14px; margin-bottom: 16px;
+  }
+  button {
+    font: inherit; font-weight: 600; color: var(--bg); background: var(--accent);
+    border: 0; border-radius: 8px; padding: 9px 16px; cursor: pointer;
+  }
+  button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  label.knob { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 13px; }
+  input[type=range] { width: 108px; accent-color: var(--accent); }
+
+  #status {
+    padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
+  }
+  #status.error { color: var(--hot); border-color: var(--hot); }
+
+  .grid { display: grid; grid-template-columns: 260px 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 16px;
+  }
+  .card h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em;
+    color: var(--dim); margin: 0 0 12px; font-weight: 600;
+  }
+
+  #key { font-size: 52px; font-weight: 700; line-height: 1.05; letter-spacing: -0.02em; }
+  #key.idle { color: var(--dim); }
+  #root-hz { color: var(--dim); font-size: 13px; margin-top: 2px; }
+
+  .meter { margin-top: 12px; }
+  .meter .lbl { display: flex; justify-content: space-between; font-size: 12px; color: var(--dim); }
+  .bar { height: 7px; background: var(--panel-2); border-radius: 4px; overflow: hidden; margin-top: 4px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width 60ms linear; }
+  .bar.hot > i { background: var(--hot); }
+  .bar.ok > i { background: var(--ok); }
+
+  .chroma { display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px; align-items: end; height: 90px; }
+  .chroma .col { display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+  .chroma .fill { background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; transition: height 70ms linear; }
+  .chroma .name { text-align: center; font-size: 10px; color: var(--dim); margin-top: 4px; }
+  .chroma .col.top .fill { background: var(--ok); }
+
+  .seq { display: grid; grid-template-columns: 46px 1fr; gap: 8px; align-items: center; margin-top: 10px; }
+  .steps { display: grid; grid-template-columns: repeat(16, 1fr); gap: 3px; }
+  .steps .s { aspect-ratio: 1; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); }
+  .steps .s.on { background: #33415c; }
+  .steps .s.play { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .steps .s.hit { background: var(--accent); }
+  .seq .voice { font-size: 12px; color: var(--dim); }
+
+  #onset-led {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--panel-2); border: 1px solid var(--line); vertical-align: middle;
+  }
+  #onset-led.on { background: var(--hot); border-color: var(--hot); }
+
+  footer { color: var(--dim); font-size: 13px; margin-top: 22px; }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>halj — jam génératif</h1>
+    <div class="sub">La guitare pilote un drone accordé et un rythme euclidien. Tout est calculé dans cette page.</div>
+  </header>
+
+  <div class="controls">
+    <button id="btn-mic">Écouter la guitare</button>
+    <button id="btn-demo" class="ghost">Démo (guitare de synthèse)</button>
+    <button id="btn-stop" class="ghost" disabled>Arrêter</button>
+    <label class="knob">drone <input id="mix-drone" type="range" min="0" max="100" value="60"></label>
+    <label class="knob">rythme <input id="mix-rhythm" type="range" min="0" max="100" value="70"></label>
+    <label class="knob">BPM <input id="bpm" type="range" min="50" max="140" value="84"><span id="bpm-val">84</span></label>
+  </div>
+
+  <div id="status">Prêt. « Écouter la guitare » demande l'accès au micro ; « Démo » joue une guitare de synthèse interne.</div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Tonalité détectée</h2>
+      <div id="key" class="idle">—</div>
+      <div id="root-hz">fondamentale du drone : —</div>
+
+      <div class="meter">
+        <div class="lbl"><span>confiance</span><span id="conf-val">0.00</span></div>
+        <div class="bar ok"><i id="conf-bar"></i></div>
+      </div>
+      <div class="meter">
+        <div class="lbl"><span>niveau de jeu</span><span id="level-val">0.00</span></div>
+        <div class="bar"><i id="level-bar"></i></div>
+      </div>
+      <div class="meter">
+        <div class="lbl"><span>densité</span><span id="density-val">0.00</span></div>
+        <div class="bar hot"><i id="density-bar"></i></div>
+      </div>
+      <div class="meter">
+        <div class="lbl"><span>attaque <span id="onset-led"></span></span><span id="onset-count">0</span></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>Chroma — 12 classes de hauteur</h2>
+        <div class="chroma" id="chroma"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>Grille euclidienne pilotée par la densité</h2>
+        <div class="seq"><div class="voice">kick</div><div class="steps" id="steps-kick"></div></div>
+        <div class="seq"><div class="voice">percu</div><div class="steps" id="steps-perc"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Le micro exige une origine sûre : servez la page en <code>https</code> ou en <code>localhost</code>
+    (<code>python -m http.server</code> depuis <code>web/</code>). La démo fonctionne partout.
+    À jouer au casque : sur haut-parleurs, le drone se réinjecte dans le micro.
+  </footer>
+</div>
+
+<script>
+"use strict";
+/*
+ * Port navigateur de l'analyse Python (paquet `halj`).
+ *
+ * Meme chaine : chroma -> Krumhansl-Schmuckler lisse -> tonalite ; flux
+ * spectral normalise -> attaques ; energie -> densite -> motif euclidien.
+ * Les constantes sont celles de `halj/config.py`, calibrees sur le meme banc.
+ *
+ * Deux differences assumees avec la version Python, imposees par le contexte :
+ *  - le pas d'analyse est celui de requestAnimationFrame (~16 ms) et non un
+ *    hop fixe de 5.8 ms. Toutes les constantes de temps sont donc exprimees
+ *    en secondes et converties a chaque trame avec le dt reellement mesure,
+ *    ce qui rend l'analyse independante de la cadence d'affichage.
+ *  - le rythme est planifie sur l'horloge audio avec anticipation, au lieu
+ *    d'etre date par le sequenceur et envoye en UDP. La grille est donc
+ *    posee a l'echantillon pres : c'est la gigue que la version Python
+ *    signale comme limite connue, et qui disparait ici.
+ */
+
+const CONFIG = {
+  key: {
+    frameSize: 8192,      // ~5.4 Hz de resolution : separe les graves de la guitare
+    windowS: 2.0,         // fenetre d'accumulation du chroma
+    chromaTauS: 0.35,     // lissage exponentiel du vecteur chroma
+    fminHz: 73.4,
+    fmaxHz: 2093.0,
+    binsPerOctave: 36,
+    spectralTilt: 2.0,    // compensation 1/f^tilt — le reglage critique
+    binWidthScale: 1.3,
+    switchMarginKS: 0.06, // marge d'hysterese, en score K-S
+    holdS: 0.55,          // duree pendant laquelle un candidat doit tenir
+    minConfidence: 0.55,
+    silenceRms: 0.004,
+  },
+  onset: {
+    frameSize: 1024,
+    medianWindowS: 0.35,
+    delta: 5.0,           // facteur au-dessus de la mediane locale
+    floor: 0.25,          // plancher absolu (flux normalise dans [0, 1])
+    minIntervalS: 0.045,  // temps mort entre deux attaques
+    highpassHz: 120.0,    // deux biquads en cascade : 24 dB/octave
+  },
+  energy: {
+    attackTauS: 0.12,     // monte vite...
+    releaseTauS: 1.6,     // ...redescend lentement
+    floorDb: -48.0,
+    ceilDb: -12.0,
+    onsetRateWeight: 0.45,
+    onsetRateFull: 6.0,
+  },
+  rhythm: {
+    bpm: 84.0,
+    steps: 16,
+    kickPulsesMin: 2, kickPulsesMax: 7, kickRotation: 0,
+    percPulsesMin: 0, percPulsesMax: 11, percRotation: 3,
+    gateDensity: 0.08,
+  },
+  drone: { glideS: 1.8, octave: 2 },
+};
+
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+
+/* ------------------------------------------------------------------ */
+/* Tonalite : profils Krumhansl-Kessler                                */
+/* ------------------------------------------------------------------ */
+
+const KS_MAJOR = [6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88];
+const KS_MINOR = [6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17];
+
+function zscore(v) {
+  const mean = v.reduce((a, b) => a + b, 0) / v.length;
+  const centered = v.map((x) => x - mean);
+  const norm = Math.hypot(...centered);
+  return norm <= 1e-12 ? centered.map(() => 0) : centered.map((x) => x / norm);
+}
+
+function rotate(v, n) {
+  // Meme convention que numpy.roll : decale vers la droite.
+  const out = new Array(v.length);
+  for (let i = 0; i < v.length; i++) out[(i + n) % v.length] = v[i];
+  return out;
+}
+
+// 24 profils centres-normes : la correlation de Pearson se reduit alors a un
+// simple produit scalaire.
+const PROFILES = [];
+for (let t = 0; t < 12; t++) PROFILES.push({ tonic: t, mode: "maj", p: zscore(rotate(KS_MAJOR, t)) });
+for (let t = 0; t < 12; t++) PROFILES.push({ tonic: t, mode: "min", p: zscore(rotate(KS_MINOR, t)) });
+
+function correlateProfiles(chroma) {
+  const z = zscore(Array.from(chroma));
+  return PROFILES.map((prof) => {
+    let sum = 0;
+    for (let i = 0; i < 12; i++) sum += prof.p[i] * z[i];
+    return sum;
+  });
+}
+
+function estimateKey(chroma) {
+  let any = false;
+  for (const v of chroma) if (v !== 0) { any = true; break; }
+  if (!any) return null;
+
+  const scores = correlateProfiles(chroma);
+  let best = 0;
+  for (let i = 1; i < scores.length; i++) if (scores[i] > scores[best]) best = i;
+  return {
+    tonic: PROFILES[best].tonic,
+    mode: PROFILES[best].mode,
+    confidence: Math.min(1, Math.max(0, scores[best])),
+    scores,
+  };
+}
+
+function keyIndex(key) { return key.tonic + (key.mode === "maj" ? 0 : 12); }
+function keyName(key) { return `${NOTE_NAMES[key.tonic]} ${key.mode}`; }
+function sameKey(a, b) { return !!a && !!b && a.tonic === b.tonic && a.mode === b.mode; }
+
+function rootHz(key, octave) {
+  const midi = 12 * (octave + 1) + key.tonic;
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+/** Suit la tonalite : lissage du chroma + hysterese sur la decision. */
+class KeyTracker {
+  constructor(cfg) {
+    this.cfg = cfg;
+    this.ema = null;
+    this.window = [];       // { chroma, t } sur windowS secondes
+    this.key = null;
+    this.confidence = 0;
+    this.candidate = null;
+    this.candidateSince = 0;
+  }
+  reset() {
+    this.ema = null; this.window = []; this.key = null;
+    this.confidence = 0; this.candidate = null; this.candidateSince = 0;
+  }
+  update(chroma, rms, now, dt) {
+    // Sous le seuil de silence, on ne nourrit pas la fenetre : un blanc entre
+    // deux phrases ne doit pas diluer le contexte harmonique accumule.
+    if (rms < this.cfg.silenceRms) return this.key;
+    let any = false;
+    for (const v of chroma) if (v !== 0) { any = true; break; }
+    if (!any) return this.key;
+
+    const alpha = 1 - Math.exp(-dt / Math.max(this.cfg.chromaTauS, 1e-6));
+    if (!this.ema) this.ema = Array.from(chroma);
+    else for (let i = 0; i < 12; i++) this.ema[i] += alpha * (chroma[i] - this.ema[i]);
+
+    this.window.push({ chroma: this.ema.slice(), t: now });
+    while (this.window.length && now - this.window[0].t > this.cfg.windowS) this.window.shift();
+
+    const acc = new Array(12).fill(0);
+    for (const entry of this.window) for (let i = 0; i < 12; i++) acc[i] += entry.chroma[i];
+    for (let i = 0; i < 12; i++) acc[i] /= this.window.length;
+
+    const est = estimateKey(acc);
+    if (est) this.applyHysteresis(est, now);
+    this.accumulated = acc;
+    return this.key;
+  }
+  applyHysteresis(est, now) {
+    if (est.confidence < this.cfg.minConfidence) {
+      this.candidate = null;
+      return;
+    }
+    if (!this.key) {
+      this.key = { tonic: est.tonic, mode: est.mode };
+      this.confidence = est.confidence;
+      this.candidate = null;
+      return;
+    }
+    if (sameKey(est, this.key)) {
+      this.confidence = est.confidence;
+      this.candidate = null;
+      return;
+    }
+    // Le candidat doit battre la tonalite en place d'une marge nette — c'est
+    // ce qui evite les bascules relatif majeur / relatif mineur.
+    const gain = est.scores[keyIndex(est)] - est.scores[keyIndex(this.key)];
+    if (gain < this.cfg.switchMarginKS) { this.candidate = null; return; }
+
+    if (!sameKey(est, this.candidate)) {
+      this.candidate = { tonic: est.tonic, mode: est.mode };
+      this.candidateSince = now;
+    } else if (now - this.candidateSince >= this.cfg.holdS) {
+      this.key = { tonic: est.tonic, mode: est.mode };
+      this.confidence = est.confidence;
+      this.candidate = null;
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Chroma                                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Matrice (12 x nBins) projetant les bins FFT sur les classes de hauteur.
+ *
+ * La compensation en 1/f^tilt est le point sensible : le 5e harmonique d'une
+ * corde est une tierce majeure au-dessus de sa fondamentale, si bien qu'un
+ * chroma non compense entend un do majeur comme un mi mineur.
+ */
+function buildChromaFilterbank(nBins, binHz, cfg) {
+  const bank = [];
+  for (let i = 0; i < 12; i++) bank.push(new Float32Array(nBins));
+
+  const sigma = Math.max(12 / cfg.binsPerOctave, 0.25) * cfg.binWidthScale;
+  let used = 0;
+  for (let bin = 0; bin < nBins; bin++) {
+    const f = bin * binHz;
+    if (f < cfg.fminHz || f > cfg.fmaxHz) continue;
+    used++;
+    const midi = 69 + 12 * Math.log2(f / 440);
+    const tilt = Math.pow(cfg.fminHz / f, cfg.spectralTilt);
+    for (let pc = 0; pc < 12; pc++) {
+      const dist = ((midi - pc + 6) % 12 + 12) % 12 - 6;   // distance circulaire
+      bank[pc][bin] = Math.exp(-0.5 * (dist / sigma) ** 2) * tilt;
+    }
+  }
+  if (!used) throw new Error("aucun bin FFT dans la bande du chroma");
+
+  for (let pc = 0; pc < 12; pc++) {
+    let sum = 0;
+    for (let b = 0; b < nBins; b++) sum += bank[pc][b];
+    if (sum > 1e-12) for (let b = 0; b < nBins; b++) bank[pc][b] /= sum;
+  }
+  return bank;
+}
+
+/** Spectre de magnitudes lineaires -> chroma normalise (somme 1). */
+function chromaFromMagnitudes(bank, magnitudes) {
+  const chroma = new Float64Array(12);
+  let total = 0;
+  for (let pc = 0; pc < 12; pc++) {
+    const row = bank[pc];
+    let sum = 0;
+    for (let b = 0; b < magnitudes.length; b++) sum += row[b] * magnitudes[b];
+    chroma[pc] = sum;
+    total += sum;
+  }
+  if (total <= 1e-12) return new Float64Array(12);
+  for (let pc = 0; pc < 12; pc++) chroma[pc] /= total;
+  return chroma;
+}
+
+/* ------------------------------------------------------------------ */
+/* Attaques                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Flux spectral demi-redresse, normalise par l'energie des deux trames.
+ *
+ * La normalisation est ce qui rend le flux exploitable : le resultat est un
+ * ratio dans [0, 1] — la proportion d'energie qui vient d'apparaitre — donc
+ * une note *tenue* tend vers 0 quel que soit son niveau, la ou un flux brut
+ * suit l'ondulation d'interference et franchit n'importe quel seuil.
+ */
+class OnsetDetector {
+  constructor(cfg) {
+    this.cfg = cfg;
+    this.prev = null;
+    this.history = [];
+    this.pending = null;
+    this.lastOnsetTime = -Infinity;
+    this.flux = 0;
+    this.threshold = 0;
+  }
+  reset() {
+    this.prev = null; this.history = []; this.pending = null;
+    this.lastOnsetTime = -Infinity; this.flux = 0; this.threshold = 0;
+  }
+  process(magnitudes, now, dt) {
+    if (!this.prev || this.prev.length !== magnitudes.length) {
+      this.prev = Float32Array.from(magnitudes);
+      return null;
+    }
+    let numerator = 0, denominator = 1e-6 * magnitudes.length;
+    for (let i = 0; i < magnitudes.length; i++) {
+      const rise = magnitudes[i] - this.prev[i];
+      if (rise > 0) numerator += rise;
+      denominator += magnitudes[i] + this.prev[i];
+    }
+    this.prev.set(magnitudes);
+    const flux = numerator / denominator;
+    this.flux = flux;
+
+    const keep = Math.max(3, Math.round(this.cfg.medianWindowS / Math.max(dt, 1e-4)));
+    const threshold = this.currentThreshold();
+    this.history.push(flux);
+    while (this.history.length > keep) this.history.shift();
+    this.threshold = threshold;
+
+    return this.pickPeak(flux, threshold, now);
+  }
+  currentThreshold() {
+    if (!this.history.length) return this.cfg.floor;
+    const sorted = this.history.slice().sort((a, b) => a - b);
+    const median = sorted[sorted.length >> 1];
+    return Math.max(this.cfg.floor, median * this.cfg.delta);
+  }
+  pickPeak(flux, threshold, now) {
+    let onset = null;
+    if (this.pending) {
+      const p = this.pending;
+      // Le pic n'est valide qu'une fois qu'on l'a vu redescendre.
+      if (p.flux >= flux && p.flux > p.threshold &&
+          p.time - this.lastOnsetTime >= this.cfg.minIntervalS) {
+        this.lastOnsetTime = p.time;
+        onset = { time: p.time, strength: p.flux / Math.max(p.threshold, 1e-9) };
+      }
+      this.pending = null;
+    }
+    if (flux > threshold) this.pending = { flux, threshold, time: now };
+    return onset;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Energie -> densite                                                  */
+/* ------------------------------------------------------------------ */
+
+class EnergyTracker {
+  constructor(cfg) { this.cfg = cfg; this.level = 0; this.onsetRate = 0; }
+  reset() { this.level = 0; this.onsetRate = 0; }
+  update(rms, onsetCount, dt) {
+    const db = 20 * Math.log10(Math.max(rms, 1e-9));
+    const span = this.cfg.ceilDb - this.cfg.floorDb;
+    const target = Math.min(1, Math.max(0, (db - this.cfg.floorDb) / span));
+    // Constantes asymetriques : relance vive, retombee lente.
+    const tau = target > this.level ? this.cfg.attackTauS : this.cfg.releaseTauS;
+    this.level += (1 - Math.exp(-dt / Math.max(tau, 1e-6))) * (target - this.level);
+
+    const decay = Math.exp(-dt / Math.max(this.cfg.releaseTauS, 1e-6));
+    this.onsetRate *= decay;
+    if (onsetCount) this.onsetRate += onsetCount * (1 - decay) / Math.max(dt, 1e-4);
+    return this.density();
+  }
+  density() {
+    const rate = Math.min(1, this.onsetRate / Math.max(this.cfg.onsetRateFull, 1e-9));
+    const w = this.cfg.onsetRateWeight;
+    return Math.min(1, Math.max(0, (1 - w) * this.level + w * rate));
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Rythmes euclidiens                                                  */
+/* ------------------------------------------------------------------ */
+
+/** Algorithme de Bjorklund : `pulses` impulsions reparties sur `steps` pas. */
+function euclideanPattern(steps, pulses, rotation = 0) {
+  if (steps <= 0) throw new Error("steps doit etre strictement positif");
+  if (pulses < 0 || pulses > steps) throw new Error("pulses hors bornes");
+
+  let pattern;
+  if (pulses === 0) pattern = new Array(steps).fill(false);
+  else if (pulses === steps) pattern = new Array(steps).fill(true);
+  else {
+    let groups = Array.from({ length: pulses }, () => [true]);
+    let remainders = Array.from({ length: steps - pulses }, () => [false]);
+    while (remainders.length > 1) {
+      const pairs = Math.min(groups.length, remainders.length);
+      const merged = [];
+      for (let i = 0; i < pairs; i++) merged.push(groups[i].concat(remainders[i]));
+      const leftover = groups.length > pairs ? groups.slice(pairs) : remainders.slice(pairs);
+      groups = merged; remainders = leftover;
+    }
+    pattern = groups.concat(remainders).flat();
+  }
+  if (rotation) {
+    const off = ((rotation % steps) + steps) % steps;
+    pattern = pattern.slice(off).concat(pattern.slice(0, off));
+  }
+  return pattern;
+}
+
+function pulsesForDensity(density, min, max) {
+  const d = Math.min(1, Math.max(0, density));
+  return Math.round(min + d * (max - min));
+}
+
+function patternForVoice(voice, density, cfg) {
+  const [min, max, rot] = voice === "kick"
+    ? [cfg.kickPulsesMin, cfg.kickPulsesMax, cfg.kickRotation]
+    : [cfg.percPulsesMin, cfg.percPulsesMax, cfg.percRotation];
+  return euclideanPattern(cfg.steps, Math.min(pulsesForDensity(density, min, max), cfg.steps), rot);
+}
+
+/* ------------------------------------------------------------------ */
+/* Synthese Web Audio                                                  */
+/* ------------------------------------------------------------------ */
+
+class Synth {
+  constructor(ctx) {
+    this.ctx = ctx;
+
+    this.droneGain = ctx.createGain();
+    this.droneGain.gain.value = 0.0;
+    this.rhythmGain = ctx.createGain();
+    this.rhythmGain.gain.value = 0.7;
+
+    // Reverb courte, generee : tient l'espace entre deux phrases de guitare.
+    this.reverb = ctx.createConvolver();
+    this.reverb.buffer = Synth.impulseResponse(ctx, 2.6, 2.4);
+    this.reverbGain = ctx.createGain();
+    this.reverbGain.gain.value = 0.32;
+
+    this.droneGain.connect(ctx.destination);
+    this.droneGain.connect(this.reverbGain);
+    this.rhythmGain.connect(ctx.destination);
+    this.reverbGain.connect(this.reverb);
+    this.reverb.connect(ctx.destination);
+
+    this.droneFilter = ctx.createBiquadFilter();
+    this.droneFilter.type = "lowpass";
+    this.droneFilter.frequency.value = 800;
+    this.droneFilter.Q.value = 0.8;
+    this.droneFilter.connect(this.droneGain);
+
+    this.oscillators = [];
+    this.started = false;
+  }
+
+  static impulseResponse(ctx, duration, decay) {
+    const len = Math.floor(ctx.sampleRate * duration);
+    const buffer = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = buffer.getChannelData(ch);
+      for (let i = 0; i < len; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+      }
+    }
+    return buffer;
+  }
+
+  /** Drone : sub sinus + dents de scie legerement desaccordees. */
+  startDrone(freq) {
+    if (this.started) return;
+    this.started = true;
+    const specs = [
+      { type: "sine", ratio: 0.5, gain: 0.55 },
+      { type: "sine", ratio: 1.0, gain: 0.30 },
+      { type: "sawtooth", ratio: 1.001, gain: 0.16 },
+      { type: "sawtooth", ratio: 0.999, gain: 0.16 },
+      { type: "sawtooth", ratio: 2.002, gain: 0.07 },
+    ];
+    for (const spec of specs) {
+      const osc = this.ctx.createOscillator();
+      osc.type = spec.type;
+      osc.frequency.value = freq * spec.ratio;
+      const gain = this.ctx.createGain();
+      gain.gain.value = spec.gain;
+      osc.connect(gain).connect(this.droneFilter);
+      osc.start();
+      this.oscillators.push({ osc, ratio: spec.ratio });
+    }
+    // Modulation lente du filtre : le drone respire au lieu de rester fige.
+    this.lfo = this.ctx.createOscillator();
+    this.lfo.frequency.value = 0.07;
+    this.lfoGain = this.ctx.createGain();
+    this.lfoGain.gain.value = 180;
+    this.lfo.connect(this.lfoGain).connect(this.droneFilter.frequency);
+    this.lfo.start();
+  }
+
+  /** Reaccorde le drone en glissando — jamais par saut. */
+  setKey(freq, mode, glideS) {
+    const now = this.ctx.currentTime;
+    for (const { osc, ratio } of this.oscillators) {
+      // setTargetAtTime : constante de temps ~ glide/3 pour arriver a ~95 %.
+      osc.frequency.setTargetAtTime(freq * ratio, now, Math.max(glideS, 0.01) / 3);
+    }
+    this.droneCutoffBase = mode === "min" ? 700 : 1100;
+  }
+
+  setLevel(level) {
+    const target = (this.droneCutoffBase || 800) * (0.7 + level * 1.1);
+    this.droneFilter.frequency.setTargetAtTime(target, this.ctx.currentTime, 0.35);
+  }
+
+  fadeDrone(amp, seconds = 2.0) {
+    this.droneGain.gain.setTargetAtTime(amp, this.ctx.currentTime, seconds / 3);
+  }
+
+  kick(time, velocity, freq) {
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(Math.max(freq * 4.5, 40), time);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(freq, 30), time + 0.09);
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.exponentialRampToValueAtTime(Math.max(velocity, 0.01), time + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.34);
+    osc.connect(gain).connect(this.rhythmGain);
+    osc.start(time); osc.stop(time + 0.4);
+  }
+
+  perc(time, velocity, step) {
+    const noise = this.ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer();
+    const band = this.ctx.createBiquadFilter();
+    band.type = "bandpass";
+    band.frequency.value = 2400 + (step % 4) * 600;
+    band.Q.value = 1.2;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.exponentialRampToValueAtTime(Math.max(velocity * 0.5, 0.01), time + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.09);
+    // Le pas pilote le panoramique : la grille s'ouvre en stereo.
+    const pan = this.ctx.createStereoPanner();
+    pan.pan.value = ((step % 8) / 7) * 1.2 - 0.6;
+    noise.connect(band).connect(gain).connect(pan).connect(this.rhythmGain);
+    noise.start(time); noise.stop(time + 0.12);
+  }
+
+  noiseBuffer() {
+    if (!this._noise) {
+      const len = Math.floor(this.ctx.sampleRate * 0.2);
+      this._noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const data = this._noise.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    }
+    return this._noise;
+  }
+
+  /** Bref eclat sur une attaque : rend audible le fait que l'analyse entend. */
+  spark(freq, velocity) {
+    const time = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq * 4;
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.exponentialRampToValueAtTime(Math.max(velocity * 0.05, 0.001), time + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.45);
+    osc.connect(gain).connect(this.droneGain);
+    osc.start(time); osc.stop(time + 0.5);
+  }
+
+  stop() {
+    for (const { osc } of this.oscillators) { try { osc.stop(); } catch (e) {} }
+    if (this.lfo) { try { this.lfo.stop(); } catch (e) {} }
+    this.oscillators = [];
+    this.started = false;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Guitare de synthese (Karplus-Strong) — equivalent de --source synth  */
+/* ------------------------------------------------------------------ */
+
+function karplusStrong(freq, durationS, sampleRate, decay = 0.995) {
+  const n = Math.max(0, Math.floor(durationS * sampleRate));
+  const delay = Math.max(2, Math.round(sampleRate / freq));
+  const buf = new Float64Array(delay);
+  let mean = 0;
+  for (let i = 0; i < delay; i++) { buf[i] = Math.random() * 2 - 1; mean += buf[i]; }
+  mean /= delay;
+  // Le filtre moyenneur conserve la moyenne : une excitation a moyenne non
+  // nulle laisserait une continue qui ne decroit jamais.
+  for (let i = 0; i < delay; i++) buf[i] -= mean;
+
+  const out = new Float32Array(n);
+  let pos = 0;
+  while (pos < n) {
+    for (let i = 0; i < delay && pos < n; i++, pos++) out[pos] = buf[i];
+    const next = new Float64Array(delay);
+    for (let i = 0; i < delay; i++) next[i] = 0.5 * (buf[i] + buf[(i + 1) % delay]) * decay;
+    buf.set(next);
+  }
+  return out;
+}
+
+function buildDemoBuffer(ctx) {
+  const sr = ctx.sampleRate;
+  const chordS = 2.5;
+  // i - VI - III - VII en la mineur : terrain naturel du drone.
+  const chords = [
+    { root: 45, intervals: [0, 3, 7, 12, 15] },
+    { root: 41, intervals: [0, 4, 7, 12, 16] },
+    { root: 48, intervals: [0, 4, 7, 12, 16] },
+    { root: 43, intervals: [0, 4, 7, 12, 16] },
+  ];
+  const total = Math.floor(chords.length * chordS * sr);
+  const buffer = ctx.createBuffer(1, total, sr);
+  const data = buffer.getChannelData(0);
+
+  chords.forEach((chord, index) => {
+    const base = Math.floor(index * chordS * sr);
+    chord.intervals.forEach((interval, voice) => {
+      const freq = 440 * Math.pow(2, (chord.root + interval - 69) / 12);
+      const offset = Math.floor(voice * 0.018 * sr);   // grattage : cordes decalees
+      const string = karplusStrong(freq, chordS - voice * 0.018, sr);
+      for (let i = 0; i < string.length && base + offset + i < total; i++) {
+        data[base + offset + i] += string[i] / chord.intervals.length;
+      }
+    });
+  });
+  return buffer;
+}
+
+/* ------------------------------------------------------------------ */
+/* Application                                                         */
+/* ------------------------------------------------------------------ */
+
+const ui = {
+  key: document.getElementById("key"),
+  rootHz: document.getElementById("root-hz"),
+  conf: document.getElementById("conf-bar"),
+  confVal: document.getElementById("conf-val"),
+  level: document.getElementById("level-bar"),
+  levelVal: document.getElementById("level-val"),
+  density: document.getElementById("density-bar"),
+  densityVal: document.getElementById("density-val"),
+  onsetLed: document.getElementById("onset-led"),
+  onsetCount: document.getElementById("onset-count"),
+  chroma: document.getElementById("chroma"),
+  stepsKick: document.getElementById("steps-kick"),
+  stepsPerc: document.getElementById("steps-perc"),
+  status: document.getElementById("status"),
+};
+
+const chromaCols = [];
+for (let i = 0; i < 12; i++) {
+  const col = document.createElement("div");
+  col.className = "col";
+  const fill = document.createElement("div");
+  fill.className = "fill";
+  fill.style.height = "2px";
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = NOTE_NAMES[i];
+  col.append(fill, name);
+  ui.chroma.append(col);
+  chromaCols.push({ col, fill });
+}
+
+const stepCells = { kick: [], perc: [] };
+for (const voice of ["kick", "perc"]) {
+  const host = voice === "kick" ? ui.stepsKick : ui.stepsPerc;
+  for (let i = 0; i < CONFIG.rhythm.steps; i++) {
+    const cell = document.createElement("div");
+    cell.className = "s";
+    host.append(cell);
+    stepCells[voice].push(cell);
+  }
+}
+
+const app = {
+  ctx: null, synth: null, source: null, stream: null,
+  chromaAnalyser: null, onsetAnalyser: null, levelAnalyser: null,
+  bank: null, tracker: null, onsetDetector: null, energy: null,
+  running: false, lastTime: 0, onsetTotal: 0, lastOnsetAt: -1,
+  density: 0, level: 0, nextStepTime: 0, stepIndex: 0, rafId: null, timerId: null,
+};
+
+function setStatus(message, isError = false) {
+  ui.status.textContent = message;
+  ui.status.classList.toggle("error", isError);
+}
+
+function buildGraph(ctx, sourceNode) {
+  const cfg = CONFIG;
+
+  const chromaAnalyser = ctx.createAnalyser();
+  chromaAnalyser.fftSize = cfg.key.frameSize;
+  chromaAnalyser.smoothingTimeConstant = 0;   // le lissage est fait en amont, pas ici
+
+  const levelAnalyser = ctx.createAnalyser();
+  levelAnalyser.fftSize = 1024;
+  levelAnalyser.smoothingTimeConstant = 0;
+
+  const onsetAnalyser = ctx.createAnalyser();
+  onsetAnalyser.fftSize = cfg.onset.frameSize;
+  onsetAnalyser.smoothingTimeConstant = 0;
+
+  // Passe-haut en cascade (24 dB/oct) devant la detection d'attaques : le
+  // bruit de manche et les rumbles de la piece vivent sous 120 Hz.
+  const hp1 = ctx.createBiquadFilter();
+  hp1.type = "highpass"; hp1.frequency.value = cfg.onset.highpassHz; hp1.Q.value = 0.5412;
+  const hp2 = ctx.createBiquadFilter();
+  hp2.type = "highpass"; hp2.frequency.value = cfg.onset.highpassHz; hp2.Q.value = 1.3066;
+
+  sourceNode.connect(chromaAnalyser);
+  sourceNode.connect(levelAnalyser);
+  sourceNode.connect(hp1).connect(hp2).connect(onsetAnalyser);
+
+  return { chromaAnalyser, levelAnalyser, onsetAnalyser };
+}
+
+function dbToMagnitude(dbArray, out) {
+  for (let i = 0; i < dbArray.length; i++) {
+    out[i] = dbArray[i] <= -180 ? 0 : Math.pow(10, dbArray[i] / 20);
+  }
+  return out;
+}
+
+async function start(mode) {
+  if (app.running) stop();
+
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await ctx.resume();
+  app.ctx = ctx;
+
+  let sourceNode;
+  if (mode === "mic") {
+    if (!navigator.mediaDevices || !window.isSecureContext) {
+      setStatus(
+        "Le micro exige une origine sûre (https ou localhost). Servez la page avec " +
+        "`python -m http.server` depuis web/, ou utilisez la démo.", true);
+      ctx.close();
+      return;
+    }
+    try {
+      app.stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          // Ces traitements sont concus pour la voix : ils ecraseraient la
+          // dynamique de la guitare et fausseraient la densite.
+          echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+        },
+      });
+    } catch (err) {
+      setStatus("Accès au micro refusé (" + err.name + "). La démo reste disponible.", true);
+      ctx.close();
+      return;
+    }
+    sourceNode = ctx.createMediaStreamSource(app.stream);
+    // Au casque de préférence : sur haut-parleurs, le drone rentre dans le
+    // micro et finit par entretenir sa propre tonalité.
+    setStatus("À l'écoute. Jouez — la tonalité et la densité pilotent le drone et le " +
+              "rythme. Au casque de préférence : sur haut-parleurs, le drone se " +
+              "réinjecte dans le micro et s'auto-entretient.");
+  } else {
+    const buffer = buildDemoBuffer(ctx);
+    const player = ctx.createBufferSource();
+    player.buffer = buffer;
+    player.loop = true;
+    // La guitare de synthese s'entend aussi, en retrait du mix genere.
+    const monitor = ctx.createGain();
+    monitor.gain.value = 0.5;
+    player.connect(monitor).connect(ctx.destination);
+    player.start();
+    app.source = player;
+    sourceNode = monitor;
+    setStatus("Démo : une guitare de synthèse joue Am – F – C – G en boucle.");
+  }
+
+  const graph = buildGraph(ctx, sourceNode);
+  Object.assign(app, graph);
+
+  const binHz = ctx.sampleRate / CONFIG.key.frameSize;
+  app.bank = buildChromaFilterbank(graph.chromaAnalyser.frequencyBinCount, binHz, CONFIG.key);
+  app.tracker = new KeyTracker(CONFIG.key);
+  app.onsetDetector = new OnsetDetector(CONFIG.onset);
+  app.energy = new EnergyTracker(CONFIG.energy);
+
+  app.synth = new Synth(ctx);
+  app.synth.startDrone(rootHz({ tonic: 9, mode: "min" }, CONFIG.drone.octave));
+  app.synth.fadeDrone(mixValue("mix-drone") * 0.35, 3.0);
+  app.synth.rhythmGain.gain.value = mixValue("mix-rhythm") * 0.8;
+
+  app.onsetTotal = 0;
+  app.stepIndex = 0;
+  app.nextStepTime = ctx.currentTime + 0.15;
+  app.lastTime = performance.now() / 1000;
+  app.running = true;
+
+  document.getElementById("btn-stop").disabled = false;
+  app.rafId = requestAnimationFrame(analysisTick);
+  // Sequenceur a anticipation : la grille est posee sur l'horloge audio, donc
+  // a l'echantillon pres, meme si la boucle d'analyse a de la gigue.
+  app.timerId = setInterval(scheduleRhythm, 25);
+}
+
+function mixValue(id) { return document.getElementById(id).value / 100; }
+
+const magChroma = { db: null, lin: null };
+const magOnset = { db: null, lin: null };
+let timeBuffer = null;
+
+function analysisTick() {
+  if (!app.running) return;
+  const ctx = app.ctx;
+  const now = performance.now() / 1000;
+  const dt = Math.min(0.1, Math.max(1e-3, now - app.lastTime));
+  app.lastTime = now;
+
+  // --- spectres
+  const nChroma = app.chromaAnalyser.frequencyBinCount;
+  if (!magChroma.db || magChroma.db.length !== nChroma) {
+    magChroma.db = new Float32Array(nChroma);
+    magChroma.lin = new Float32Array(nChroma);
+  }
+  app.chromaAnalyser.getFloatFrequencyData(magChroma.db);
+  dbToMagnitude(magChroma.db, magChroma.lin);
+
+  const nOnset = app.onsetAnalyser.frequencyBinCount;
+  if (!magOnset.db || magOnset.db.length !== nOnset) {
+    magOnset.db = new Float32Array(nOnset);
+    magOnset.lin = new Float32Array(nOnset);
+  }
+  app.onsetAnalyser.getFloatFrequencyData(magOnset.db);
+  dbToMagnitude(magOnset.db, magOnset.lin);
+
+  // --- niveau
+  if (!timeBuffer || timeBuffer.length !== app.levelAnalyser.fftSize) {
+    timeBuffer = new Float32Array(app.levelAnalyser.fftSize);
+  }
+  app.levelAnalyser.getFloatTimeDomainData(timeBuffer);
+  let sum = 0;
+  for (let i = 0; i < timeBuffer.length; i++) sum += timeBuffer[i] * timeBuffer[i];
+  const rms = Math.sqrt(sum / timeBuffer.length);
+
+  // --- attaques
+  const onset = app.onsetDetector.process(magOnset.lin, now, dt);
+  if (onset) {
+    app.onsetTotal++;
+    app.lastOnsetAt = now;
+    if (app.synth && app.currentKey) {
+      app.synth.spark(rootHz(app.currentKey, CONFIG.drone.octave), Math.min(onset.strength, 4));
+    }
+  }
+
+  // --- energie et densite
+  app.density = app.energy.update(rms, onset ? 1 : 0, dt);
+  app.level = app.energy.level;
+
+  // --- chroma et tonalite
+  const chroma = chromaFromMagnitudes(app.bank, magChroma.lin);
+  const key = app.tracker.update(chroma, rms, now, dt);
+  if (key && !sameKey(key, app.currentKey)) {
+    app.currentKey = { tonic: key.tonic, mode: key.mode };
+    app.synth.setKey(rootHz(key, CONFIG.drone.octave), key.mode, CONFIG.drone.glideS);
+  }
+  app.synth.setLevel(app.level);
+
+  render(chroma, now);
+  app.rafId = requestAnimationFrame(analysisTick);
+}
+
+/** Pose les prochains pas de la grille sur l'horloge audio (anticipation). */
+function scheduleRhythm() {
+  if (!app.running) return;
+  const ctx = app.ctx;
+  const cfg = CONFIG.rhythm;
+  const stepDuration = (60 / cfg.bpm) * 4 / cfg.steps;
+  const lookahead = 0.12;
+
+  // Apres une mise en veille de l'onglet, on se recale au lieu de deverser
+  // tout le retard accumule.
+  if (ctx.currentTime - app.nextStepTime > cfg.steps * stepDuration) {
+    app.nextStepTime = ctx.currentTime;
+    app.stepIndex = 0;
+  }
+
+  while (app.nextStepTime < ctx.currentTime + lookahead) {
+    const slot = app.stepIndex % cfg.steps;
+    const gated = app.density < cfg.gateDensity;
+    if (!gated) {
+      const accent = slot % 4 === 0 ? 1.0 : 0.78;
+      const velocity = Math.min(1, 0.35 + 0.65 * app.density) * accent;
+      if (patternForVoice("kick", app.density, cfg)[slot]) {
+        const freq = app.currentKey ? rootHz(app.currentKey, CONFIG.drone.octave) / 2 : 55;
+        app.synth.kick(app.nextStepTime, velocity, freq);
+      }
+      if (patternForVoice("perc", app.density, cfg)[slot]) {
+        app.synth.perc(app.nextStepTime, velocity, slot);
+      }
+    }
+    app.playSlot = slot;
+    app.nextStepTime += stepDuration;
+    app.stepIndex++;
+  }
+}
+
+function render(chroma, now) {
+  const key = app.currentKey;
+  ui.key.textContent = key ? keyName(key) : "—";
+  ui.key.classList.toggle("idle", !key);
+  ui.rootHz.textContent = key
+    ? `fondamentale du drone : ${rootHz(key, CONFIG.drone.octave).toFixed(1)} Hz`
+    : "fondamentale du drone : —";
+
+  const conf = app.tracker.confidence || 0;
+  ui.conf.style.width = (conf * 100).toFixed(0) + "%";
+  ui.confVal.textContent = conf.toFixed(2);
+  ui.level.style.width = (app.level * 100).toFixed(0) + "%";
+  ui.levelVal.textContent = app.level.toFixed(2);
+  ui.density.style.width = (app.density * 100).toFixed(0) + "%";
+  ui.densityVal.textContent = app.density.toFixed(2);
+
+  ui.onsetCount.textContent = String(app.onsetTotal);
+  ui.onsetLed.classList.toggle("on", now - app.lastOnsetAt < 0.12);
+
+  let peak = 0;
+  for (const v of chroma) peak = Math.max(peak, v);
+  let top = -1, topValue = 0;
+  chroma.forEach((v, i) => { if (v > topValue) { topValue = v; top = i; } });
+  chromaCols.forEach(({ col, fill }, i) => {
+    const ratio = peak > 0 ? chroma[i] / peak : 0;
+    fill.style.height = Math.max(2, ratio * 78).toFixed(0) + "px";
+    col.classList.toggle("top", i === top && peak > 0);
+  });
+
+  const slot = app.playSlot ?? -1;
+  for (const voice of ["kick", "perc"]) {
+    const pattern = patternForVoice(voice, app.density, CONFIG.rhythm);
+    const gated = app.density < CONFIG.rhythm.gateDensity;
+    stepCells[voice].forEach((cell, i) => {
+      cell.classList.toggle("on", pattern[i] && !gated);
+      cell.classList.toggle("play", i === slot);
+      cell.classList.toggle("hit", pattern[i] && i === slot && !gated);
+    });
+  }
+}
+
+function stop() {
+  app.running = false;
+  if (app.rafId) cancelAnimationFrame(app.rafId);
+  if (app.timerId) clearInterval(app.timerId);
+  if (app.synth) app.synth.stop();
+  if (app.source) { try { app.source.stop(); } catch (e) {} app.source = null; }
+  if (app.stream) { app.stream.getTracks().forEach((t) => t.stop()); app.stream = null; }
+  if (app.ctx) { app.ctx.close(); app.ctx = null; }
+  app.currentKey = null;
+  document.getElementById("btn-stop").disabled = true;
+  setStatus("Arrêté.");
+}
+
+document.getElementById("btn-mic").addEventListener("click", () => start("mic"));
+document.getElementById("btn-demo").addEventListener("click", () => start("demo"));
+document.getElementById("btn-stop").addEventListener("click", stop);
+document.getElementById("mix-drone").addEventListener("input", (e) => {
+  if (app.synth) app.synth.fadeDrone((e.target.value / 100) * 0.35, 0.3);
+});
+document.getElementById("mix-rhythm").addEventListener("input", (e) => {
+  if (app.synth) app.synth.rhythmGain.gain.value = (e.target.value / 100) * 0.8;
+});
+document.getElementById("bpm").addEventListener("input", (e) => {
+  CONFIG.rhythm.bpm = Number(e.target.value);
+  document.getElementById("bpm-val").textContent = e.target.value;
+});
+
+if (!window.isSecureContext) {
+  setStatus(
+    "Page ouverte hors origine sûre : le micro sera refusé par le navigateur. " +
+    "Servez-la via `python -m http.server` depuis web/, ou lancez la démo.", true);
+}
+
+// Exposition pour les tests automatises (tests/test_web.py).
+window.HALJ = {
+  CONFIG, NOTE_NAMES, KS_MAJOR, KS_MINOR,
+  euclideanPattern, pulsesForDensity, patternForVoice,
+  estimateKey, correlateProfiles, keyName, rootHz, KeyTracker,
+  buildChromaFilterbank, chromaFromMagnitudes,
+  OnsetDetector, EnergyTracker, karplusStrong, app,
+};
+</script>
+</body>
+</html>
