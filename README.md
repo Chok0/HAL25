@@ -36,18 +36,19 @@ interne et fonctionne partout, même sans micro — l'équivalent de `--source s
 
 Pages sert en HTTPS, donc le micro y fonctionne : c'est le bon hébergement pour
 cette appli. Le workflow [`.github/workflows/pages.yml`](.github/workflows/pages.yml)
-publie `web/` à la racine du site. Il reste **un réglage à faire à la main**,
-une seule fois :
+publie `web/` à la racine du site, sur `https://<utilisateur>.github.io/HAL25/`.
 
-> `Settings` → `Pages` → **Source : GitHub Actions**
+Il active Pages lui-même au premier passage (`enablement: true`) : rien à
+régler au préalable. Il se déclenche sur chaque push vers `main` touchant
+`web/`, ou à la demande via `Actions` → `Run workflow`.
 
-Le workflow se déclenche ensuite sur chaque push vers `main` touchant `web/`
-(ou à la demande, via `Run workflow`). L'appli est alors sur
-`https://<utilisateur>.github.io/HAL25/`.
+Deux causes d'échec à connaître :
 
-Tant que ce réglage n'est pas fait, rien n'est publié et le workflow échoue au
-moment du déploiement. Il faut aussi que le workflow soit présent sur `main` :
-sur une branche de travail, il ne se déclenche pas.
+- **`Get Pages site failed … Not Found`** : Pages n'est pas activé et l'action
+  n'a pas le droit de l'activer. Basculer `Settings` → `Pages` → Source sur
+  **GitHub Actions** règle le problème définitivement.
+- **rien ne se déclenche** : le workflow doit être sur `main`. Depuis une
+  branche de travail, ni le push ni `Run workflow` ne le proposent.
 
 À jouer au casque : sur haut-parleurs, le drone se réinjecte dans le micro et
 finit par entretenir sa propre tonalité.
