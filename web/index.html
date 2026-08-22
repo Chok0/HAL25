@@ -1392,8 +1392,6 @@ async function start(mode) {
       return;
     }
     sourceNode = ctx.createMediaStreamSource(app.stream);
-    // Au casque de préférence : sur haut-parleurs, le drone rentre dans le
-    // micro et finit par entretenir sa propre tonalité.
     const reglages = app.stream.getAudioTracks()[0].getSettings();
     setStatus(
       listeningMode() === "speaker"
