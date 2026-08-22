@@ -24,6 +24,10 @@ class ChromaExtractor:
     reduit a une compression logarithmique puis un produit matrice-vecteur.
     """
 
+    # Le backend expose-t-il le spectre brut, donc le point d'insertion de
+    # l'auto-ecoute ? Vrai pour la STFT, faux pour la CQT de librosa.
+    supports_self_mask = True
+
     def __init__(self, audio: AudioConfig, key: KeyConfig):
         self.audio = audio
         self.key = key
@@ -82,11 +86,12 @@ class ChromaExtractor:
     def __call__(self, frame: np.ndarray) -> np.ndarray:
         return self.process(frame)
 
-    def process(self, frame: np.ndarray) -> np.ndarray:
-        """Retourne le chroma (12,) d'une trame temporelle.
+    def spectrum(self, frame: np.ndarray) -> np.ndarray:
+        """Spectre de magnitudes d'une trame temporelle.
 
-        Le vecteur est normalise en norme L1 ; s'il est nul (silence), il est
-        retourne tel quel et l'appelant decide quoi en faire.
+        Etape separee de la projection pour que l'appelant puisse s'intercaler
+        entre les deux — c'est la que l'auto-ecoute retire ce que l'appli joue
+        elle-meme (`analysis/selfmask.py`).
         """
         if frame.shape[0] != self.frame_size:
             raise ValueError(
@@ -97,12 +102,23 @@ class ChromaExtractor:
         # courant : elle remonte les partiels faibles, donc exactement les
         # harmoniques aigues que la compensation en 1/f^tilt cherche a
         # attenuer. Mesure a l'appui, elle degrade la detection de moitie.
-        spectrum = np.abs(np.fft.rfft(frame.astype(np.float64) * self._window))
-        chroma = self._filterbank @ spectrum
+        return np.abs(np.fft.rfft(frame.astype(np.float64) * self._window))
+
+    def from_spectrum(self, spectrum: np.ndarray) -> np.ndarray:
+        """Projette un spectre de magnitudes sur les 12 classes, normalise en L1."""
+        chroma = self._filterbank @ np.asarray(spectrum, dtype=np.float64)
         total = chroma.sum()
         if total <= 1e-12:
             return np.zeros(12, dtype=np.float64)
         return chroma / total
+
+    def process(self, frame: np.ndarray) -> np.ndarray:
+        """Retourne le chroma (12,) d'une trame temporelle.
+
+        Le vecteur est normalise en norme L1 ; s'il est nul (silence), il est
+        retourne tel quel et l'appelant decide quoi en faire.
+        """
+        return self.from_spectrum(self.spectrum(frame))
 
     # -- backends optionnels -------------------------------------------
 
@@ -123,7 +139,13 @@ class LibrosaChromaExtractor(ChromaExtractor):
     temps reel, soit ~150 fois plus lente que le backend NumPy, elle ne peut
     pas tenir le direct. Son interet est d'arbitrer la qualite du backend par
     defaut sur du materiel reel, pas de le remplacer.
+
+    La suppression d'auto-ecoute ne s'y applique pas : elle opere sur les bins
+    de la STFT, que ce backend n'utilise pas. Sans consequence, ce backend
+    servant a arbitrer hors ligne, ou rien ne se reinjecte.
     """
+
+    supports_self_mask = False
 
     def __init__(self, audio: AudioConfig, key: KeyConfig):
         super().__init__(audio, key)

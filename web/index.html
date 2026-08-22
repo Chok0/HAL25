@@ -86,6 +86,26 @@
   .steps .s.hit { background: var(--accent); }
   .seq .voice { font-size: 12px; color: var(--dim); }
 
+  .chords { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    padding: 9px 15px; border-radius: 8px; font-weight: 700; font-size: 15px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
+    transition: background 200ms linear, color 200ms linear;
+  }
+  .chip.now { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  .chip.next { border-color: var(--accent); color: var(--accent); }
+  .badge {
+    font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 4px; background: var(--panel-2); color: var(--dim);
+    border: 1px solid var(--line); margin-left: 6px; vertical-align: 2px;
+  }
+  .badge.lead { color: var(--hot); border-color: var(--hot); }
+  .badge.follow { color: var(--ok); border-color: var(--ok); }
+  select {
+    font: inherit; font-size: 13px; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  }
+
   #onset-led {
     display: inline-block; width: 10px; height: 10px; border-radius: 50%;
     background: var(--panel-2); border: 1px solid var(--line); vertical-align: middle;
@@ -110,6 +130,13 @@
     <label class="knob">drone <input id="mix-drone" type="range" min="0" max="100" value="60"></label>
     <label class="knob">rythme <input id="mix-rhythm" type="range" min="0" max="100" value="70"></label>
     <label class="knob">BPM <input id="bpm" type="range" min="50" max="140" value="84"><span id="bpm-val">84</span></label>
+    <label class="knob" title="0 : l'appli suit la tonalité détectée. 100 : elle mène sa grille.">
+      initiative <input id="agency" type="range" min="0" max="100" value="50"><span id="agency-val">50</span></label>
+    <label class="knob">écoute
+      <select id="listening">
+        <option value="headphones">casque</option>
+        <option value="speaker">haut-parleur</option>
+      </select></label>
   </div>
 
   <div id="status">Prêt. « Écouter la guitare » demande l'accès au micro ; « Démo » joue une guitare de synthèse interne.</div>
@@ -135,10 +162,23 @@
       <div class="meter">
         <div class="lbl"><span>attaque <span id="onset-led"></span></span><span id="onset-count">0</span></div>
       </div>
+      <div class="meter">
+        <div class="lbl"><span>auto-écoute retirée</span><span id="self-val">—</span></div>
+        <div class="bar hot"><i id="self-bar"></i></div>
+      </div>
     </div>
 
     <div>
       <div class="card">
+        <h2>Grille d'accords proposée <span id="decision" class="badge">—</span></h2>
+        <div class="chords" id="chords"></div>
+        <div class="meter">
+          <div class="lbl"><span>prochain accord</span><span id="next-chord">—</span></div>
+          <div class="bar"><i id="chord-bar"></i></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
         <h2>Chroma — 12 classes de hauteur</h2>
         <div class="chroma" id="chroma"></div>
       </div>
@@ -154,7 +194,10 @@
   <footer>
     Le micro exige une origine sûre : servez la page en <code>https</code> ou en <code>localhost</code>
     (<code>python -m http.server</code> depuis <code>web/</code>). La démo fonctionne partout.
-    À jouer au casque : sur haut-parleurs, le drone se réinjecte dans le micro.
+    Sur haut-parleur — un téléphone posé sur la table — choisissez <code>écoute : haut-parleur</code> :
+    la page retire alors de son analyse ce qu'elle joue elle-même, et laisse en plus le navigateur
+    annuler l'écho. <code>initiative</code> décide qui mène : à gauche l'appli suit votre tonalité,
+    à droite elle déroule sa grille d'accords et vous invite à la suivre.
   </footer>
 </div>
 
@@ -217,6 +260,29 @@ const CONFIG = {
     gateDensity: 0.08,
   },
   drone: { glideS: 1.8, octave: 2 },
+  selfListen: {
+    enabled: true,
+    bandSemitones: 0.6,   // demi-largeur du masque autour d'un partiel du drone
+    partials: 10,         // harmoniques modelisees par voix
+    floorRiseTauS: 2.0,   // montee du plancher, quand personne ne joue
+    floorFallTauS: 0.8,   // descente : lente, pour enjamber les battements
+    subtraction: 1.0,     // on retire le plancher mesure, et rien de plus
+    playSmoothTauS: 0.4,
+    playGate: 0.04,       // sous cette part "pas nous", le micro n'entend que l'appli
+    startupS: 3.0,
+    freezeAfterOnsetS: 0.8,
+    hitPreS: 0.02, hitPostS: 0.09, hitThresholdBoost: 3.0, hitLatencyS: 0.03,
+  },
+  harmony: {
+    enabled: true,
+    agency: 0.5,          // 0 = suit la tonalite, 1 = mene sa grille
+    barsPerChord: 1,
+    renewAfterLoops: 2,
+    followMarginMin: 0.0,
+    followMarginMax: 1.5,
+    rootWeight: 0.5,
+    minVote: 0.35,
+  },
 };
 
 const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
@@ -433,7 +499,12 @@ class OnsetDetector {
     this.prev = null; this.history = []; this.pending = null;
     this.lastOnsetTime = -Infinity; this.flux = 0; this.threshold = 0;
   }
-  process(magnitudes, now, dt) {
+  /**
+   * `thresholdScale` releve temporairement le seuil : l'auto-ecoute s'en sert
+   * autour des impacts que l'appli vient d'emettre. Relever plutot que couper,
+   * parce qu'une attaque jouee pile sur le kick doit encore passer.
+   */
+  process(magnitudes, now, dt, thresholdScale = 1) {
     if (!this.prev || this.prev.length !== magnitudes.length) {
       this.prev = Float32Array.from(magnitudes);
       return null;
@@ -449,7 +520,9 @@ class OnsetDetector {
     this.flux = flux;
 
     const keep = Math.max(3, Math.round(this.cfg.medianWindowS / Math.max(dt, 1e-4)));
-    const threshold = this.currentThreshold();
+    // La mediane s'alimente du flux brut : le releve de seuil est
+    // circonstanciel, il ne doit pas contaminer la statistique locale.
+    const threshold = this.currentThreshold() * Math.max(thresholdScale, 1e-9);
     this.history.push(flux);
     while (this.history.length > keep) this.history.shift();
     this.threshold = threshold;
@@ -503,6 +576,402 @@ class EnergyTracker {
     const rate = Math.min(1, this.onsetRate / Math.max(this.cfg.onsetRateFull, 1e-9));
     const w = this.cfg.onsetRateWeight;
     return Math.min(1, Math.max(0, (1 - w) * this.level + w * rate));
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Auto-ecoute : retirer ce que l'appli vient elle-meme de jouer       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Sur haut-parleur — un telephone pose sur la table — le micro reentend le
+ * drone emis a l'instant, et la boucle se referme deux fois : le drone nourrit
+ * le chroma qui confirme la tonalite du drone, et le niveau ne redescend
+ * jamais, donc le rythme tourne tout seul et entretient le niveau.
+ *
+ * Tout part d'une seule mesure : la part de ce qu'on entend qui n'est pas
+ * nous. Le niveau reinjecte n'est pas modelisable (haut-parleur, piece,
+ * distance), donc il est mesure. Au casque, le plancher tombe a zero et la
+ * correction disparait d'elle-meme.
+ */
+
+const STARTUP_INERTIA_S = 0.2;
+
+/** Plancher glissant : montee lente et conditionnelle, descente lente. */
+class FloorFollower {
+  constructor(riseTauS, fallTauS) {
+    this.riseTauS = Math.max(riseTauS, 1e-6);
+    this.fallTauS = Math.max(fallTauS, 1e-6);
+    this.value = null;
+    this.elapsed = 0;
+  }
+  reset() { this.value = null; this.elapsed = 0; }
+  update(observed, dt, allowRise = true) {
+    if (!this.value || this.value.length !== observed.length) {
+      this.value = Float64Array.from(observed);
+      return this.value;
+    }
+    dt = Math.max(dt, 0);
+    let rise = 0;
+    if (allowRise) {
+      this.elapsed += dt;
+      // Moyenne cumulee au demarrage, exponentielle ensuite : sinon le
+      // plancher mettrait plusieurs secondes a trouver le drone, et l'appli
+      // aurait le temps de s'accorder sur elle-meme.
+      rise = Math.max(1 - Math.exp(-dt / this.riseTauS),
+                      dt / (this.elapsed + STARTUP_INERTIA_S));
+    }
+    const fall = 1 - Math.exp(-dt / this.fallTauS);
+    for (let i = 0; i < observed.length; i++) {
+      const alpha = observed[i] > this.value[i] ? rise : fall;
+      this.value[i] += alpha * (observed[i] - this.value[i]);
+    }
+    return this.value;
+  }
+}
+
+/** Frequences reellement occupees par le drone pour un accord donne. */
+function dronePartials(rootHz, intervals, count, fmaxHz) {
+  if (!(rootHz > 0)) return [];
+  const voices = [rootHz / 2].concat(intervals.map((i) => rootHz * 2 ** (i / 12)));
+  const out = [];
+  for (const voice of voices) {
+    for (let harmonic = 1; harmonic <= Math.max(1, count); harmonic++) {
+      const freq = voice * harmonic;
+      if (freq > fmaxHz) break;
+      out.push(freq);
+    }
+  }
+  return out;
+}
+
+class SelfListen {
+  constructor(cfg, binHz, nBins, fminHz, fmaxHz) {
+    this.cfg = cfg;
+    this.binHz = binHz;
+    this.nBins = nBins;
+    this.floor = new FloorFollower(cfg.floorRiseTauS, cfg.floorFallTauS);
+    this.smoothed = null;
+    this.mask = new Uint8Array(nBins);
+    this.maskKey = "";
+    this.analysed = new Uint8Array(nBins);
+    for (let bin = 0; bin < nBins; bin++) {
+      const f = bin * binHz;
+      this.analysed[bin] = f >= fminHz && f <= fmaxHz ? 1 : 0;
+    }
+    this.fmaxHz = fmaxHz;
+    this.hits = [];
+    this.elapsed = 0;
+    this.timeS = 0;
+    this.frozenUntil = -Infinity;
+    this.playRatio = 1;
+    this.playing = true;
+    this.quiet = true;
+    this.settled = false;
+    this.active = false;
+    this.removedRatio = 0;
+  }
+
+  /** Declare l'accord tenu par le drone ; reconstruit le masque si besoin. */
+  setDrone(rootHz, intervals) {
+    const partials = dronePartials(rootHz, intervals, this.cfg.partials, this.fmaxHz);
+    this.active = true;
+    const key = partials.map((f) => Math.round(f)).join(",");
+    if (key === this.maskKey) return;
+    this.maskKey = key;
+    this.mask.fill(0);
+    const ratio = 2 ** (this.cfg.bandSemitones / 12) - 1;
+    for (const freq of partials) {
+      // Au moins deux bins de chaque cote : c'est la largeur du lobe principal
+      // de la fenetre, donc la fuite spectrale d'un partiel fort.
+      const half = Math.max(2, Math.round((freq * ratio) / this.binHz));
+      const center = Math.round(freq / this.binHz);
+      for (let bin = Math.max(0, center - half);
+           bin <= Math.min(this.nBins - 1, center + half); bin++) {
+        this.mask[bin] = 1;
+      }
+    }
+  }
+
+  noteHit(timeS) { this.hits.push(timeS + this.cfg.hitLatencyS); }
+
+  noteOnset(timeS) { this.frozenUntil = timeS + this.cfg.freezeAfterOnsetS; }
+
+  get warming() {
+    return this.cfg.enabled && this.active && !this.settled
+      && this.elapsed <= this.cfg.startupS;
+  }
+
+  /** Retire le plancher sur les bins du drone, et mesure ce qui reste. */
+  cleanSpectrum(magnitudes, dt) {
+    if (!(this.cfg.enabled && this.active)) {
+      this.removedRatio = 0;
+      this.playRatio = 1; this.playing = true; this.quiet = false;
+      return magnitudes;
+    }
+    this.elapsed += dt;
+    // Le plancher suit — et le chroma recoit — le spectre *lisse*. Un drone
+    // bat : ses partiels voisins se renforcent et s'annulent tour a tour, et
+    // trame a trame il semble aller et venir en permanence. Moyenne sur
+    // quelques dixiemes de seconde, il redevient ce qu'il est : immobile.
+    if (!this.smoothed || this.smoothed.length !== magnitudes.length) {
+      this.smoothed = Float64Array.from(magnitudes);
+    } else {
+      const beta = 1 - Math.exp(-Math.max(dt, 0) / this.cfg.playSmoothTauS);
+      for (let i = 0; i < magnitudes.length; i++) {
+        this.smoothed[i] += beta * (magnitudes[i] - this.smoothed[i]);
+      }
+    }
+    const floor = this.floor.update(this.smoothed, dt, this.quiet);
+
+    const cleaned = Float64Array.from(this.smoothed);
+    let removed = 0, total = 0, heard = 0, others = 0;
+    for (let i = 0; i < cleaned.length; i++) {
+      total += this.smoothed[i];
+      if (this.mask[i]) {
+        const take = Math.min(this.cfg.subtraction * floor[i], this.smoothed[i]);
+        cleaned[i] = this.smoothed[i] - take;
+        removed += take;
+      }
+      if (this.analysed[i]) {
+        // Pour *mesurer* qui fait du bruit, on retire le plancher partout —
+        // ce calcul ne nourrit aucun son, il ne peut donc abimer aucun jeu.
+        heard += this.smoothed[i];
+        others += Math.max(this.smoothed[i] - this.cfg.subtraction * floor[i], 0);
+      }
+    }
+    this.removedRatio = total > 1e-12 ? removed / total : 0;
+    this.playRatio = heard > 1e-12 ? others / heard : 1;
+    this.playing = this.playRatio > this.cfg.playGate;
+    if (!this.playing) this.settled = true;
+    // Le plancher continue de monter pendant le jeu, et ce n'est pas une
+    // negligence : bin par bin, une ligne melodique se deplace — une note tient
+    // une demi-seconde la ou le plancher met deux secondes a monter. Seul
+    // l'immobile est appris. Le sursis apres une attaque protege le seul cas ou
+    // l'argument tombe : une note reellement tenue.
+    this.quiet = this.timeS >= this.frozenUntil;
+    return cleaned;
+  }
+
+  /** Le niveau de ce qui est *joue* : le niveau mesure, moins notre part. */
+  cleanRms(rms) {
+    if (!(this.cfg.enabled && this.active)) return rms;
+    return this.playing ? rms * this.playRatio : 0;
+  }
+
+  /** Facteur applique au seuil d'attaque : > 1 autour d'un impact emis. */
+  thresholdScale(timeS) {
+    this.timeS = timeS;
+    if (!(this.cfg.enabled && this.active)) return 1;
+    while (this.hits.length && this.hits[0] < timeS - this.cfg.hitPostS) this.hits.shift();
+    for (const hit of this.hits) {
+      if (timeS >= hit - this.cfg.hitPreS && timeS <= hit + this.cfg.hitPostS) {
+        return this.cfg.hitThresholdBoost;
+      }
+    }
+    return 1;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Grille d'accords : l'appli propose au lieu de subir                 */
+/* ------------------------------------------------------------------ */
+
+const CHORD_INTERVALS = { maj: [0, 4, 7], min: [0, 3, 7], sus4: [0, 5, 7] };
+
+// Degres disponibles par mode : nom -> [demi-tons depuis la tonique, qualite].
+const DEGREES = {
+  min: { i: [0, "min"], III: [3, "maj"], iv: [5, "min"], v: [7, "min"],
+         V: [7, "maj"], VI: [8, "maj"], VII: [10, "maj"] },
+  maj: { I: [0, "maj"], ii: [2, "min"], iii: [4, "min"], IV: [5, "maj"],
+         V: [7, "maj"], vi: [9, "min"] },
+};
+
+// Toutes les grilles partent de la tonique : quel que soit le moment ou
+// l'ancre change, la grille repart d'un point stable.
+const PROGRESSIONS = {
+  min: [["i", "VI", "III", "VII"], ["i", "iv", "VII", "III"],
+        ["i", "VII", "VI", "V"], ["i", "iv", "v", "i"]],
+  maj: [["I", "V", "vi", "IV"], ["I", "IV", "V", "IV"],
+        ["I", "vi", "ii", "V"], ["I", "IV", "vi", "V"]],
+};
+
+function chordPitchClasses(chord) {
+  return CHORD_INTERVALS[chord.quality].map((i) => (chord.root + i) % 12);
+}
+
+function chordName(chord) {
+  return NOTE_NAMES[chord.root] + { maj: "", min: "m", sus4: "sus4" }[chord.quality];
+}
+
+function chordFromDegree(key, degree) {
+  const [semitones, quality] = DEGREES[key.mode][degree];
+  return { root: (key.tonic + semitones) % 12, quality, degree };
+}
+
+function progressionFor(key, index) {
+  const grids = PROGRESSIONS[key.mode];
+  return grids[((index % grids.length) + grids.length) % grids.length]
+    .map((d) => chordFromDegree(key, d));
+}
+
+/**
+ * Masse du chroma tombant dans l'accord, fondamentale sur-ponderee.
+ *
+ * Le bonus n'est pas cosmetique : La mineur et Do majeur partagent deux notes
+ * sur trois, c'est la fondamentale qui les separe.
+ */
+function chordScore(chord, chroma, rootWeight = 0.5) {
+  let total = 0;
+  for (let i = 0; i < 12; i++) total += chroma[i];
+  if (total <= 1e-12) return 0;
+  let inside = 0;
+  for (const pc of chordPitchClasses(chord)) inside += chroma[pc];
+  return (inside + rootWeight * chroma[chord.root]) / total;
+}
+
+// Rappel vers le registre nominal, en octaves de penalite par octave d'ecart.
+// Sans lui, "prendre l'octave la plus proche" a chaque accord est un cliquet :
+// une grille descendante entraine le drone toujours plus bas.
+const REGISTER_PULL = 0.5;
+
+/** Fondamentale du drone : plus petit deplacement, sans quitter le registre. */
+function voicedRootHz(pitchClass, octave, previousHz) {
+  const base = rootHz({ tonic: pitchClass, mode: "maj" }, octave);
+  if (!previousHz || previousHz <= 0) return base;
+  let best = base, bestCost = Infinity;
+  for (const shift of [-1, 0, 1]) {
+    const candidate = base * 2 ** shift;
+    const cost = Math.abs(Math.log2(candidate / previousHz))
+      + REGISTER_PULL * Math.abs(shift);
+    if (cost < bestCost) { best = candidate; bestCost = cost; }
+  }
+  return best;
+}
+
+/**
+ * Tient la grille, l'avance a la mesure, ecoute si le jeu propose autre chose.
+ *
+ * Un seul reglage, `agency` : 0 suit la tonalite detectee comme avant, 0.5
+ * deroule une grille mais cede des que le jeu designe clairement un autre
+ * accord, 1 ne cede plus.
+ */
+class HarmonyDirector {
+  constructor(cfg, stepsPerBar) {
+    this.cfg = cfg;
+    this.stepsPerBar = stepsPerBar;
+    this.key = null;
+    this.progression = [];
+    this.position = 0;
+    this.chord = null;
+    this.lastDecision = "anchor";
+    this.gridIndex = 0;
+    this.loops = 0;
+    this.vote = new Float64Array(12);
+    this.nextChangeStep = 0;
+  }
+  get stepsPerChord() { return Math.max(1, this.stepsPerBar * this.cfg.barsPerChord); }
+  get nextChord() {
+    if (!this.progression.length) return null;
+    return this.progression[(this.position + 1) % this.progression.length];
+  }
+  stepsToChange(step) { return Math.max(0, this.nextChangeStep - step); }
+
+  /** La tonalite detectee est-elle deja un degre de la grille en place ? */
+  explains(key) {
+    if (!this.key) return false;
+    for (const degree of Object.keys(DEGREES[this.key.mode])) {
+      const chord = chordFromDegree(this.key, degree);
+      if (chord.root !== key.tonic) continue;
+      if ((chord.quality === "min") === (key.mode === "min")) return true;
+    }
+    return false;
+  }
+
+  observeKey(key, step) {
+    if (!key || (this.key && sameKey(key, this.key)) || this.explains(key)) return null;
+    this.key = { tonic: key.tonic, mode: key.mode };
+    // Une grille differente a chaque ancrage : reprendre la meme suite
+    // d'accords a chaque changement de tonalite s'entendrait comme un tic.
+    this.progression = progressionFor(this.key, this.gridIndex++);
+    this.loops = 0;
+    this.position = 0;
+    this.chord = this.progression[0];
+    this.lastDecision = "anchor";
+    this.vote.fill(0);
+    this.nextChangeStep = step + this.stepsPerChord;
+    return { chord: this.chord, decision: "anchor" };
+  }
+
+  observeChroma(chroma) {
+    for (let i = 0; i < 12; i++) this.vote[i] += chroma[i];
+  }
+
+  onStep(step) {
+    if (!this.chord || !this.key) return null;
+    // Le sequenceur se recale apres une mise en veille de l'onglet : on se
+    // recale avec lui plutot que de deverser les changements en retard.
+    if (step < this.nextChangeStep - 2 * this.stepsPerChord) {
+      this.nextChangeStep = step + this.stepsPerChord;
+      return null;
+    }
+    if (step < this.nextChangeStep) return null;
+    this.nextChangeStep = step + this.stepsPerChord;
+    const change = this.decide();
+    this.vote.fill(0);
+    return change;
+  }
+
+  decide() {
+    const agency = Math.min(1, Math.max(0, this.cfg.agency));
+    if (agency <= 0 || !this.progression.length) {
+      // Suiveur pur : la triade de la tonalite, rien d'autre.
+      this.chord = chordFromDegree(this.key, this.key.mode === "min" ? "i" : "I");
+      this.lastDecision = "follow";
+      return { chord: this.chord, decision: "follow" };
+    }
+    const planned = this.progression[(this.position + 1) % this.progression.length];
+    const margin = this.cfg.followMarginMin
+      + agency * (this.cfg.followMarginMax - this.cfg.followMarginMin);
+    const choice = this.playerChoice();
+    if (choice && choice.score >= this.cfg.minVote
+        && choice.score - chordScore(planned, this.vote, this.cfg.rootWeight) > margin) {
+      // Le jeu designe clairement un autre accord : on le rejoint, et la grille
+      // reprend a partir de la s'il en fait partie.
+      this.chord = choice.chord;
+      this.lastDecision = "follow";
+      const index = this.progression.findIndex(
+        (c) => c.root === choice.chord.root && c.quality === choice.chord.quality);
+      if (index >= 0) this.position = index;
+      return { chord: this.chord, decision: "follow" };
+    }
+    this.advance();
+    this.chord = this.progression[this.position];
+    this.lastDecision = "lead";
+    return { chord: this.chord, decision: "lead" };
+  }
+
+  advance() {
+    this.position = (this.position + 1) % this.progression.length;
+    if (this.position !== 0) return;
+    this.loops++;
+    if (this.loops >= Math.max(1, this.cfg.renewAfterLoops)) {
+      this.loops = 0;
+      this.progression = progressionFor(this.key, ++this.gridIndex);
+    }
+  }
+
+  playerChoice() {
+    let sum = 0;
+    for (let i = 0; i < 12; i++) sum += this.vote[i];
+    if (sum <= 1e-12 || !this.key) return null;
+    let best = null;
+    for (const degree of Object.keys(DEGREES[this.key.mode])) {
+      const chord = chordFromDegree(this.key, degree);
+      const score = chordScore(chord, this.vote, this.cfg.rootWeight);
+      if (!best || score > best.score) best = { score, chord };
+    }
+    return best;
   }
 }
 
@@ -596,26 +1065,34 @@ class Synth {
     return buffer;
   }
 
-  /** Drone : sub sinus + dents de scie legerement desaccordees. */
+  /** Drone : sub sinus + dents de scie desaccordees, une voix par note. */
   startDrone(freq) {
     if (this.started) return;
     this.started = true;
+    // `voice` designe le degre que tient l'oscillateur : c'est ce qui permet a
+    // l'accord de bouger sans reconstruire le graphe.
     const specs = [
-      { type: "sine", ratio: 0.5, gain: 0.55 },
-      { type: "sine", ratio: 1.0, gain: 0.30 },
-      { type: "sawtooth", ratio: 1.001, gain: 0.16 },
-      { type: "sawtooth", ratio: 0.999, gain: 0.16 },
-      { type: "sawtooth", ratio: 2.002, gain: 0.07 },
+      { type: "sine",     voice: "sub",   ratio: 1.0,   gain: 0.55 },
+      { type: "sine",     voice: "root",  ratio: 1.0,   gain: 0.30 },
+      { type: "sawtooth", voice: "root",  ratio: 1.001, gain: 0.16 },
+      { type: "sawtooth", voice: "root",  ratio: 0.999, gain: 0.16 },
+      { type: "sawtooth", voice: "root",  ratio: 2.002, gain: 0.07 },
+      // Tierce et quinte en retrait : elles colorent l'accord, elles ne
+      // concurrencent pas la fondamentale qui porte la basse.
+      { type: "sine",     voice: "fifth", ratio: 1.0,   gain: 0.10 },
+      { type: "sawtooth", voice: "fifth", ratio: 1.001, gain: 0.10 },
+      { type: "sine",     voice: "third", ratio: 1.0,   gain: 0.07 },
+      { type: "sawtooth", voice: "third", ratio: 0.999, gain: 0.07 },
     ];
     for (const spec of specs) {
       const osc = this.ctx.createOscillator();
       osc.type = spec.type;
-      osc.frequency.value = freq * spec.ratio;
+      osc.frequency.value = freq * spec.ratio * (spec.voice === "sub" ? 0.5 : 1);
       const gain = this.ctx.createGain();
       gain.gain.value = spec.gain;
       osc.connect(gain).connect(this.droneFilter);
       osc.start();
-      this.oscillators.push({ osc, ratio: spec.ratio });
+      this.oscillators.push({ osc, ratio: spec.ratio, voice: spec.voice });
     }
     // Modulation lente du filtre : le drone respire au lieu de rester fige.
     this.lfo = this.ctx.createOscillator();
@@ -624,16 +1101,28 @@ class Synth {
     this.lfoGain.gain.value = 180;
     this.lfo.connect(this.lfoGain).connect(this.droneFilter.frequency);
     this.lfo.start();
+    this.chordIntervals = [0, 3, 7];
   }
 
-  /** Reaccorde le drone en glissando — jamais par saut. */
-  setKey(freq, mode, glideS) {
+  /** Reaccorde le drone sur un accord — en glissando, jamais par saut. */
+  setChord(freq, intervals, glideS) {
+    this.chordIntervals = intervals;
+    const semitones = {
+      sub: intervals[0], root: intervals[0], third: intervals[1], fifth: intervals[2],
+    };
     const now = this.ctx.currentTime;
-    for (const { osc, ratio } of this.oscillators) {
+    for (const { osc, ratio, voice } of this.oscillators) {
+      const octave = voice === "sub" ? 0.5 : 1;
+      const target = freq * octave * ratio * 2 ** (semitones[voice] / 12);
       // setTargetAtTime : constante de temps ~ glide/3 pour arriver a ~95 %.
-      osc.frequency.setTargetAtTime(freq * ratio, now, Math.max(glideS, 0.01) / 3);
+      osc.frequency.setTargetAtTime(target, now, Math.max(glideS, 0.01) / 3);
     }
+  }
+
+  /** Le mode colore le timbre : mineur plus sombre, majeur plus ouvert. */
+  setKey(freq, mode, glideS) {
     this.droneCutoffBase = mode === "min" ? 700 : 1100;
+    if (!this.chordIntervals) this.setChord(freq, [0, mode === "min" ? 3 : 4, 7], glideS);
   }
 
   setLevel(level) {
@@ -778,6 +1267,12 @@ const ui = {
   onsetLed: document.getElementById("onset-led"),
   onsetCount: document.getElementById("onset-count"),
   chroma: document.getElementById("chroma"),
+  chords: document.getElementById("chords"),
+  decision: document.getElementById("decision"),
+  nextChord: document.getElementById("next-chord"),
+  chordBar: document.getElementById("chord-bar"),
+  selfBar: document.getElementById("self-bar"),
+  selfVal: document.getElementById("self-val"),
   stepsKick: document.getElementById("steps-kick"),
   stepsPerc: document.getElementById("steps-perc"),
   status: document.getElementById("status"),
@@ -813,8 +1308,13 @@ const app = {
   ctx: null, synth: null, source: null, stream: null,
   chromaAnalyser: null, onsetAnalyser: null, levelAnalyser: null,
   bank: null, tracker: null, onsetDetector: null, energy: null,
+  selfListen: null, harmony: null, chord: null, droneHz: null,
   running: false, lastTime: 0, onsetTotal: 0, lastOnsetAt: -1,
   density: 0, level: 0, nextStepTime: 0, stepIndex: 0, rafId: null, timerId: null,
+  // Ecart entre l'horloge audio et celle de l'analyse, plus la latence de
+  // sortie : c'est ce qui permet de savoir *quand* un impact emis reviendra
+  // dans le micro.
+  clockOffset: 0, outputLatency: 0,
 };
 
 function setStatus(message, isError = false) {
@@ -875,11 +1375,15 @@ async function start(mode) {
       return;
     }
     try {
+      // Sur haut-parleur, on laisse en plus le navigateur faire son travail :
+      // son annulateur d'echo dispose du signal de sortie et de l'horloge
+      // materielle, ce que la page n'a pas. Au casque on le coupe — concu pour
+      // la voix, il ecraserait la dynamique de l'instrument et fausserait la
+      // densite. L'auto-ecoute de la page, elle, tourne dans les deux cas.
+      const speaker = listeningMode() === "speaker";
       app.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          // Ces traitements sont concus pour la voix : ils ecraseraient la
-          // dynamique de la guitare et fausseraient la densite.
-          echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+          echoCancellation: speaker, noiseSuppression: false, autoGainControl: false,
         },
       });
     } catch (err) {
@@ -888,11 +1392,15 @@ async function start(mode) {
       return;
     }
     sourceNode = ctx.createMediaStreamSource(app.stream);
-    // Au casque de préférence : sur haut-parleurs, le drone rentre dans le
-    // micro et finit par entretenir sa propre tonalité.
-    setStatus("À l'écoute. Jouez — la tonalité et la densité pilotent le drone et le " +
-              "rythme. Au casque de préférence : sur haut-parleurs, le drone se " +
-              "réinjecte dans le micro et s'auto-entretient.");
+    const reglages = app.stream.getAudioTracks()[0].getSettings();
+    setStatus(
+      listeningMode() === "speaker"
+        ? "À l'écoute, mode haut-parleur. La page retire de son analyse ce qu'elle " +
+          "joue elle-même" +
+          (reglages.echoCancellation ? ", et le navigateur annule l'écho en plus." : ".") +
+          " Si elle ne vous entend plus, baissez le drone."
+        : "À l'écoute. Jouez — la tonalité et la densité pilotent le drone et le rythme."
+    );
   } else {
     const buffer = buildDemoBuffer(ctx);
     const player = ctx.createBufferSource();
@@ -916,15 +1424,32 @@ async function start(mode) {
   app.tracker = new KeyTracker(CONFIG.key);
   app.onsetDetector = new OnsetDetector(CONFIG.onset);
   app.energy = new EnergyTracker(CONFIG.energy);
+  app.selfListen = new SelfListen(
+    CONFIG.selfListen, binHz, graph.chromaAnalyser.frequencyBinCount,
+    CONFIG.key.fminHz, CONFIG.key.fmaxHz);
+  app.harmony = CONFIG.harmony.enabled
+    ? new HarmonyDirector(CONFIG.harmony, CONFIG.rhythm.steps) : null;
+  app.chord = null;
+  app.droneHz = null;
+  app.outputLatency = ctx.outputLatency || ctx.baseLatency || 0.02;
 
   app.synth = new Synth(ctx);
   app.synth.startDrone(rootHz({ tonic: 9, mode: "min" }, CONFIG.drone.octave));
+  // La demo joue sa propre guitare : rien ne se reinjecte, il n'y a rien a
+  // retirer. Au micro, en revanche, le drone est declare des la premiere note.
+  if (mode === "mic") {
+    app.selfListen.setDrone(
+      rootHz({ tonic: 9, mode: "min" }, CONFIG.drone.octave), [0, 3, 7]);
+  }
   app.synth.fadeDrone(mixValue("mix-drone") * 0.35, 3.0);
   app.synth.rhythmGain.gain.value = mixValue("mix-rhythm") * 0.8;
 
   app.onsetTotal = 0;
   app.stepIndex = 0;
-  app.nextStepTime = ctx.currentTime + 0.15;
+  // Zero commun au sequenceur et a la grille d'accords : les accords changent
+  // sur un debut de mesure, pas au milieu d'un motif.
+  app.startTime = ctx.currentTime + 0.15;
+  app.nextStepTime = app.startTime;
   app.lastTime = performance.now() / 1000;
   app.running = true;
 
@@ -974,31 +1499,76 @@ function analysisTick() {
   for (let i = 0; i < timeBuffer.length; i++) sum += timeBuffer[i] * timeBuffer[i];
   const rms = Math.sqrt(sum / timeBuffer.length);
 
+  // --- ce que l'appli joue elle-meme, retire de ce qu'elle entend
+  // L'horloge audio et celle de l'analyse ne sont pas la meme ; on releve leur
+  // ecart ici, ou les deux sont lisibles dans la meme trame.
+  app.clockOffset = now - ctx.currentTime;
+  const cleanChroma = app.selfListen.cleanSpectrum(magChroma.lin, dt);
+  const playRms = app.selfListen.cleanRms(rms);
+
   // --- attaques
-  const onset = app.onsetDetector.process(magOnset.lin, now, dt);
+  let onset = app.onsetDetector.process(
+    magOnset.lin, now, dt, app.selfListen.thresholdScale(now));
+  if (onset && !app.selfListen.playing) {
+    // Le niveau dit que personne ne joue : ce qui a franchi le seuil est une
+    // crete du drone, pas une attaque. Sans ce garde-fou, l'appli s'excite sur
+    // son propre rythme.
+    onset = null;
+  }
   if (onset) {
     app.onsetTotal++;
     app.lastOnsetAt = now;
+    app.selfListen.noteOnset(now);
     if (app.synth && app.currentKey) {
       app.synth.spark(rootHz(app.currentKey, CONFIG.drone.octave), Math.min(onset.strength, 4));
     }
   }
 
   // --- energie et densite
-  app.density = app.energy.update(rms, onset ? 1 : 0, dt);
+  app.density = app.energy.update(playRms, onset ? 1 : 0, dt);
   app.level = app.energy.level;
 
   // --- chroma et tonalite
-  const chroma = chromaFromMagnitudes(app.bank, magChroma.lin);
-  const key = app.tracker.update(chroma, rms, now, dt);
+  const chroma = chromaFromMagnitudes(app.bank, cleanChroma);
+  // Tant que l'auto-ecoute se cale, on ne donne rien au suiveur : sinon
+  // l'appli s'accorderait sur son propre drone dans la demi-seconde qui suit
+  // le demarrage, et n'en bougerait plus.
+  const key = (app.selfListen.playing && !app.selfListen.warming)
+    ? app.tracker.update(chroma, playRms, now, dt)
+    : app.tracker.key;
   if (key && !sameKey(key, app.currentKey)) {
     app.currentKey = { tonic: key.tonic, mode: key.mode };
     app.synth.setKey(rootHz(key, CONFIG.drone.octave), key.mode, CONFIG.drone.glideS);
+  }
+  if (app.harmony) {
+    app.harmony.observeChroma(chroma);
+    applyChordChange(app.harmony.observeKey(app.currentKey, currentStep()));
   }
   app.synth.setLevel(app.level);
 
   render(chroma, now);
   app.rafId = requestAnimationFrame(analysisTick);
+}
+
+/** Pas courant de la grille, sur la meme horloge que le sequenceur. */
+function currentStep() {
+  if (!app.ctx) return 0;
+  const stepDuration = (60 / CONFIG.rhythm.bpm) * 4 / CONFIG.rhythm.steps;
+  return Math.max(0, Math.floor((app.ctx.currentTime - app.startTime) / stepDuration));
+}
+
+/**
+ * Applique un changement d'accord : le drone y glisse, et l'auto-ecoute est
+ * prevenue de ce qu'elle devra retirer.
+ */
+function applyChordChange(change) {
+  if (!change || !app.synth) return;
+  const intervals = CHORD_INTERVALS[change.chord.quality];
+  app.droneHz = voicedRootHz(change.chord.root, CONFIG.drone.octave, app.droneHz);
+  app.chord = change.chord;
+  app.lastDecision = change.decision;
+  app.synth.setChord(app.droneHz, intervals, CONFIG.drone.glideS);
+  if (app.selfListen.active) app.selfListen.setDrone(app.droneHz, intervals);
 }
 
 /** Pose les prochains pas de la grille sur l'horloge audio (anticipation). */
@@ -1018,16 +1588,27 @@ function scheduleRhythm() {
 
   while (app.nextStepTime < ctx.currentTime + lookahead) {
     const slot = app.stepIndex % cfg.steps;
+    const step = Math.round((app.nextStepTime - app.startTime) / stepDuration);
+    if (app.harmony) applyChordChange(app.harmony.onStep(step));
     const gated = app.density < cfg.gateDensity;
     if (!gated) {
       const accent = slot % 4 === 0 ? 1.0 : 0.78;
-      const velocity = Math.min(1, 0.35 + 0.65 * app.density) * accent;
+      // Le dernier pas avant un changement d'accord est accentue : une grille
+      // qui bouge sans prevenir ne se joue pas, un batteur l'annonce.
+      const cue = app.harmony && app.harmony.stepsToChange(step) <= 1 ? 1.3 : 1.0;
+      const velocity = Math.min(1, 0.35 + 0.65 * app.density * cue) * accent;
+      // Ce que l'appli emet, elle le declare : dans quelques millisecondes ce
+      // sera dans le micro, et ca ne doit pas y passer pour une attaque.
+      const heardAt = app.nextStepTime + app.clockOffset + app.outputLatency;
       if (patternForVoice("kick", app.density, cfg)[slot]) {
-        const freq = app.currentKey ? rootHz(app.currentKey, CONFIG.drone.octave) / 2 : 55;
+        const freq = (app.droneHz || (app.currentKey
+          ? rootHz(app.currentKey, CONFIG.drone.octave) : 110)) / 2;
         app.synth.kick(app.nextStepTime, velocity, freq);
+        app.selfListen.noteHit(heardAt);
       }
       if (patternForVoice("perc", app.density, cfg)[slot]) {
         app.synth.perc(app.nextStepTime, velocity, slot);
+        app.selfListen.noteHit(heardAt);
       }
     }
     app.playSlot = slot;
@@ -1040,9 +1621,14 @@ function render(chroma, now) {
   const key = app.currentKey;
   ui.key.textContent = key ? keyName(key) : "—";
   ui.key.classList.toggle("idle", !key);
-  ui.rootHz.textContent = key
-    ? `fondamentale du drone : ${rootHz(key, CONFIG.drone.octave).toFixed(1)} Hz`
-    : "fondamentale du drone : —";
+  // La hauteur affichee est celle que le drone tient reellement : avec une
+  // grille, ce n'est plus la tonique mais la fondamentale de l'accord en cours,
+  // choisie dans le registre le plus proche.
+  const hz = app.droneHz || (key ? rootHz(key, CONFIG.drone.octave) : null);
+  const accord = app.chord ? `${chordName(app.chord)} — ` : "";
+  ui.rootHz.textContent = hz
+    ? `drone : ${accord}${hz.toFixed(1)} Hz`
+    : "drone : —";
 
   const conf = app.tracker.confidence || 0;
   ui.conf.style.width = (conf * 100).toFixed(0) + "%";
@@ -1054,6 +1640,14 @@ function render(chroma, now) {
 
   ui.onsetCount.textContent = String(app.onsetTotal);
   ui.onsetLed.classList.toggle("on", now - app.lastOnsetAt < 0.12);
+
+  renderHarmony();
+
+  const retire = app.selfListen ? app.selfListen.removedRatio : 0;
+  ui.selfBar.style.width = (retire * 100).toFixed(0) + "%";
+  ui.selfVal.textContent = app.selfListen && app.selfListen.active
+    ? (retire * 100).toFixed(0) + "%"
+    : "—";
 
   let peak = 0;
   for (const v of chroma) peak = Math.max(peak, v);
@@ -1077,6 +1671,45 @@ function render(chroma, now) {
   }
 }
 
+/** La grille telle qu'elle est proposee : accord courant, suivant, et l'attente. */
+function renderHarmony() {
+  const director = app.harmony;
+  if (!director || !director.progression.length) {
+    if (ui.chords.childElementCount) ui.chords.replaceChildren();
+    ui.nextChord.textContent = "—";
+    ui.chordBar.style.width = "0%";
+    ui.decision.textContent = "—";
+    ui.decision.className = "badge";
+    return;
+  }
+  const noms = director.progression.map(chordName).join("|");
+  if (ui.chords.dataset.grid !== noms) {
+    ui.chords.dataset.grid = noms;
+    ui.chords.replaceChildren(...director.progression.map((chord) => {
+      const chip = document.createElement("div");
+      chip.className = "chip";
+      chip.textContent = chordName(chord);
+      return chip;
+    }));
+  }
+  const suivant = director.nextChord;
+  [...ui.chords.children].forEach((chip, index) => {
+    chip.classList.toggle("now", index === director.position);
+    chip.classList.toggle("next", index === (director.position + 1) % director.progression.length);
+  });
+  ui.nextChord.textContent = suivant ? chordName(suivant) : "—";
+  const restants = director.stepsToChange(currentStep());
+  ui.chordBar.style.width =
+    ((1 - restants / director.stepsPerChord) * 100).toFixed(0) + "%";
+  const libelle = { lead: "mène", follow: "suit le jeu", anchor: "ancre" };
+  ui.decision.textContent = libelle[director.lastDecision] || "—";
+  ui.decision.className = "badge " + director.lastDecision;
+}
+
+function listeningMode() {
+  return document.getElementById("listening").value;
+}
+
 function stop() {
   app.running = false;
   if (app.rafId) cancelAnimationFrame(app.rafId);
@@ -1086,6 +1719,11 @@ function stop() {
   if (app.stream) { app.stream.getTracks().forEach((t) => t.stop()); app.stream = null; }
   if (app.ctx) { app.ctx.close(); app.ctx = null; }
   app.currentKey = null;
+  app.harmony = null;
+  app.selfListen = null;
+  app.chord = null;
+  app.droneHz = null;
+  renderHarmony();
   document.getElementById("btn-stop").disabled = true;
   setStatus("Arrêté.");
 }
@@ -1103,6 +1741,17 @@ document.getElementById("bpm").addEventListener("input", (e) => {
   CONFIG.rhythm.bpm = Number(e.target.value);
   document.getElementById("bpm-val").textContent = e.target.value;
 });
+document.getElementById("agency").addEventListener("input", (e) => {
+  CONFIG.harmony.agency = Number(e.target.value) / 100;
+  document.getElementById("agency-val").textContent = e.target.value;
+});
+document.getElementById("listening").addEventListener("change", () => {
+  // Le mode d'ecoute change les contraintes du micro : il ne peut s'appliquer
+  // qu'a la prochaine ouverture du flux.
+  if (app.running && app.stream) {
+    setStatus("Mode d'écoute changé : relancez « Écouter » pour qu'il s'applique.");
+  }
+});
 
 if (!window.isSecureContext) {
   setStatus(
@@ -1117,6 +1766,10 @@ window.HALJ = {
   estimateKey, correlateProfiles, keyName, rootHz, KeyTracker,
   buildChromaFilterbank, chromaFromMagnitudes,
   OnsetDetector, EnergyTracker, karplusStrong, app,
+  FloorFollower, SelfListen, dronePartials,
+  HarmonyDirector, DEGREES, PROGRESSIONS, CHORD_INTERVALS,
+  chordFromDegree, progressionFor, chordScore, chordName, chordPitchClasses,
+  voicedRootHz,
 };
 </script>
 </body>

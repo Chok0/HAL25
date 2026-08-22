@@ -61,6 +61,29 @@ def _add_common_args(cmd: argparse.ArgumentParser) -> None:
     cmd.add_argument("--osc-host", default=None, help="hote OSC (defaut 127.0.0.1)")
     cmd.add_argument("--osc-port", type=int, default=None, help="port OSC (defaut 57120)")
     cmd.add_argument("--bpm", type=float, default=None, help="tempo de la grille")
+    cmd.add_argument(
+        "--agency",
+        type=float,
+        default=None,
+        metavar="0..1",
+        help=(
+            "part d'initiative harmonique : 0 = suit la tonalite detectee, "
+            "0.5 = deroule une grille mais cede au jeu, 1 = mene (defaut 0.5)"
+        ),
+    )
+    cmd.add_argument(
+        "--no-harmony",
+        action="store_true",
+        help="coupe la grille d'accords : le drone tient la tonalite detectee",
+    )
+    cmd.add_argument(
+        "--no-self-listen",
+        action="store_true",
+        help=(
+            "n'essaie pas de retirer du micro ce que l'appli joue "
+            "(a n'utiliser qu'au casque, ou pour comparer)"
+        ),
+    )
 
 
 def _add_audio_args(cmd: argparse.ArgumentParser) -> None:
@@ -118,7 +141,23 @@ def _resolve_config(args: argparse.Namespace) -> Config:
         device = args.device
         audio = replace(audio, device=int(device) if device.isdigit() else device)
 
-    return config.with_overrides(osc=osc, rhythm=rhythm, audio=audio)
+    harmony = config.harmony
+    if getattr(args, "agency", None) is not None:
+        harmony = replace(harmony, agency=min(1.0, max(0.0, args.agency)))
+    if getattr(args, "no_harmony", False):
+        harmony = replace(harmony, enabled=False)
+
+    self_listen = config.self_listen
+    if getattr(args, "no_self_listen", False):
+        self_listen = replace(self_listen, enabled=False)
+
+    return config.with_overrides(
+        osc=osc,
+        rhythm=rhythm,
+        audio=audio,
+        harmony=harmony,
+        self_listen=self_listen,
+    )
 
 
 def _run_session(args: argparse.Namespace, config: Config) -> int:

@@ -12,6 +12,7 @@ import sys
 from typing import TextIO
 
 from ..analysis.engine import AnalysisFrame
+from ..generative.harmony import HarmonyDirector
 from ..generative.scheduler import RhythmScheduler
 
 
@@ -51,6 +52,7 @@ class TerminalDisplay:
         frame: AnalysisFrame,
         scheduler: RhythmScheduler | None = None,
         force: bool = False,
+        harmony: HarmonyDirector | None = None,
     ) -> str | None:
         """Affiche l'etat si le moment est venu. Retourne la ligne ecrite."""
         if frame.onset is not None:
@@ -62,14 +64,17 @@ class TerminalDisplay:
             return None
         self._last_render_s = frame.time_s
 
-        line = self.format_line(frame, scheduler)
+        line = self.format_line(frame, scheduler, harmony)
         width = shutil.get_terminal_size((100, 24)).columns
         self.stream.write("\r" + line[: width - 1].ljust(width - 1))
         self.stream.flush()
         return line
 
     def format_line(
-        self, frame: AnalysisFrame, scheduler: RhythmScheduler | None = None
+        self,
+        frame: AnalysisFrame,
+        scheduler: RhythmScheduler | None = None,
+        harmony: HarmonyDirector | None = None,
     ) -> str:
         key = frame.key.name if frame.key else "  --  "
         flash = "*" if frame.time_s <= self._onset_flash_until else " "
@@ -81,6 +86,15 @@ class TerminalDisplay:
             f"dens {bar(frame.density, 10)}",
             f"onset {flash}",
         ]
+        if harmony is not None and harmony.chord is not None:
+            # Fleche vers l'accord suivant : c'est ce que l'appli *propose*,
+            # donc ce que le joueur peut anticiper.
+            following = harmony.next_chord
+            arrow = f" -> {following.name}" if following else ""
+            mark = {"lead": "!", "follow": "~", "anchor": "="}.get(
+                harmony.last_decision, " "
+            )
+            parts.append(f"accord {harmony.chord.name}{arrow} {mark}")
         if scheduler is not None and self.show_pattern:
             slot = scheduler.next_step % scheduler.config.steps
             parts.append(f"kick {pattern_str(scheduler.pattern('kick'), slot)}")

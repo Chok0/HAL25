@@ -13,6 +13,7 @@ import time
 
 from .bridge.osc import JamBridge
 from .config import Config
+from .generative.harmony import HarmonyDirector, voiced_root_hz
 from .generative.scheduler import RhythmScheduler
 from .notes import Key
 
@@ -41,10 +42,19 @@ def run_mock(
     transitions de motif ne claquent pas.
     """
     scheduler = RhythmScheduler(config.rhythm)
+    # Le directeur tourne aussi en mock : sans lui, tout le chemin /jam/chord
+    # resterait invisible au reglage du patch, alors que c'est lui qui fait
+    # bouger le drone.
+    harmony = (
+        HarmonyDirector(config.harmony, steps_per_bar=config.rhythm.steps)
+        if config.harmony.enabled
+        else None
+    )
     bridge.start_drone()
 
     start = time.perf_counter()
     hits = 0
+    drone_hz: float | None = None
     try:
         while True:
             now = time.perf_counter() - start
@@ -58,6 +68,15 @@ def run_mock(
             density = 0.5 - 0.5 * math.cos(2 * math.pi * now / density_period_s)
             bridge.send_energy(level=density, density=density)
             scheduler.set_density(density)
+
+            if harmony is not None:
+                step = int(now / scheduler.step_duration)
+                change = harmony.observe_key(key, step) or harmony.on_step(step)
+                if change is not None:
+                    drone_hz = voiced_root_hz(
+                        change.chord.root, config.drone.octave, drone_hz
+                    )
+                    bridge.send_chord(change.chord, drone_hz, change.decision)
 
             for event in scheduler.advance(now):
                 bridge.send_hit(event.voice, event.velocity, event.step)
