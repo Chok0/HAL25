@@ -1,8 +1,12 @@
 # halj — jam génératif local
 
 Une appli qui écoute la guitare en train d'être jouée et génère en live un
-accompagnement : un **drone dark accordé sur la tonalité détectée** et une
-**couche rythmique kick/percu réactive au jeu**.
+accompagnement : un **drone dark qui déroule une grille d'accords** ancrée sur
+la tonalité détectée, et une **couche rythmique kick/percu réactive au jeu**.
+
+Elle sait aussi **s'ignorer elle-même** : joué sur haut-parleur, un téléphone
+réentend son propre drone, et sans précaution c'est lui — pas l'instrument —
+qui finit par décider de la tonalité.
 
 Tout tourne en local, aucun traitement cloud.
 
@@ -11,11 +15,13 @@ Implémentation de la note de cadrage [`note-de-cadrage-jam-guitare.pdf`](note-d
 Deux versions, même chaîne d'analyse :
 
 ```
-guitare ──▶ analyse Python ──OSC──▶ synthèse SuperCollider ──▶ drone + rythme
-            chroma / tonalité              drones, percus
-            attaques / énergie             faible latence
+guitare ──▶ analyse Python ──OSC──▶ synthèse SuperCollider ──▶ accords + rythme
+            chroma / tonalité              drone à trois voix
+            attaques / énergie             percus, faible latence
+            auto-écoute                 ▲
+            grille d'accords ───────────┘
 
-guitare ──▶ page web autonome ──▶ drone + rythme          (web/index.html)
+guitare ──▶ page web autonome ──▶ accords + rythme        (web/index.html)
             Web Audio, zéro dépendance, rien à installer
 ```
 
@@ -31,6 +37,17 @@ cd web && python -m http.server 8000   # le micro exige https ou localhost
 
 puis <http://localhost:8000>. Le bouton **Démo** joue une guitare de synthèse
 interne et fonctionne partout, même sans micro — l'équivalent de `--source synth`.
+
+Deux réglages décident du comportement :
+
+- **écoute : casque / haut-parleur.** Sur haut-parleur, la page retire de son
+  analyse ce qu'elle vient de jouer *et* laisse le navigateur annuler l'écho —
+  il dispose du signal de sortie et de l'horloge matérielle, ce que la page n'a
+  pas. Au casque, l'annulateur reste coupé : conçu pour la voix, il écraserait
+  la dynamique de l'instrument.
+- **initiative.** À gauche, l'appli suit la tonalité détectée comme un
+  accompagnateur discret. À droite, elle déroule sa grille et ne cède plus. Au
+  milieu, elle propose et vous laisse la détourner.
 
 ### Publier sur GitHub Pages
 
@@ -50,14 +67,12 @@ Deux causes d'échec à connaître :
 - **rien ne se déclenche** : le workflow doit être sur `main`. Depuis une
   branche de travail, ni le push ni `Run workflow` ne le proposent.
 
-À jouer au casque : sur haut-parleurs, le drone se réinjecte dans le micro et
-finit par entretenir sa propre tonalité.
-
 La version web reprend les constantes calibrées et les algorithmes du paquet
 Python, et `tests/test_web.py` le vérifie dans un vrai Chromium : motifs
-euclidiens, corrélations K-S, projection du chroma et seuils sont confrontés
-aux **mêmes valeurs de référence** que la version Python. C'est ce qui empêche
-les deux implémentations de diverger en silence.
+euclidiens, corrélations K-S, projection du chroma, plancher d'auto-écoute,
+grilles d'accords et point de bascule entre mener et suivre sont confrontés aux
+**mêmes valeurs de référence** que la version Python. C'est ce qui empêche les
+deux implémentations de diverger en silence.
 
 Deux différences assumées, imposées par le contexte navigateur :
 
@@ -68,6 +83,12 @@ Deux différences assumées, imposées par le contexte navigateur :
 - le rythme est planifié sur l'horloge audio avec anticipation, donc posé à
   l'échantillon près — la gigue signalée comme limite connue de la version
   Python (datation côté Python + UDP) disparaît ici.
+
+Cette planification par anticipation sert une deuxième fois : l'appli connaît
+la date exacte de chaque impact qu'elle va émettre, et peut donc prévenir son
+analyse de ne pas le prendre pour une attaque du joueur. La conversion se fait
+avec l'écart mesuré entre l'horloge audio et celle de l'analyse, plus la
+latence de sortie déclarée par le navigateur (`outputLatency`).
 
 ## Démarrage rapide
 
@@ -96,15 +117,16 @@ halj jam --source mic          # drone + rythme
 | Commande | Étape | Ce que ça fait |
 |---|---|---|
 | `halj analyze` | phase 1 | analyse seule, affichage terminal, **aucun son généré** |
-| `halj drone` | phase 2 | drone accordé sur la tonalité, sans rythme |
+| `halj drone` | phase 2 | drone accordé, grille d'accords, sans rythme |
 | `halj jam` | phase 3 | drone + couche rythmique |
-| `halj mock` | — | émet le protocole OSC **sans analyse**, pour régler le patch SC |
+| `halj mock` | — | émet le protocole OSC **sans analyse** (accords compris), pour régler le patch SC |
 | `halj patterns` | — | table des motifs euclidiens par palier de densité |
 | `halj devices` | — | liste les entrées audio |
 
 Options utiles : `--source mic|file|synth`, `--input prise.wav`, `--bpm`,
-`--osc-port`, `--duration`, `--config config.json`, `--no-pacing` (analyse un
-fichier à pleine vitesse au lieu du temps réel).
+`--agency 0..1`, `--osc-port`, `--duration`, `--config config.json`,
+`--no-harmony`, `--no-self-listen`, `--no-pacing` (analyse un fichier à pleine
+vitesse au lieu du temps réel).
 
 `halj mock` répond directement au risque identifié au cadrage — l'overhead du
 setup cross-process. Il permet de développer tout le patch SuperCollider sans
@@ -118,7 +140,9 @@ micro, sans guitare et sans que l'analyse soit finie.
 | Tonalité | Krumhansl-Schmuckler + lissage + hystérésis | `analysis/key.py` |
 | Attaques | flux spectral normalisé, seuil adaptatif | `analysis/onset.py` |
 | Énergie | RMS lissé + débit d'attaques → densité | `analysis/energy.py` |
+| Auto-écoute | plancher glissant : ce qui ne bouge pas, c'est nous | `analysis/selfmask.py` |
 | Rythme | motifs euclidiens (Bjorklund) pilotés par la densité | `generative/` |
+| Accords | grille en degrés, avancée à la mesure, cède si le jeu insiste | `generative/harmony.py` |
 
 **Un seul pipeline chroma gère accords et notes seules.** Le chroma replie les
 octaves, donc une note isolée et l'accord qui la contient nourrissent le même
@@ -162,6 +186,109 @@ budget de latence visé (< 20-30 ms).
 > calibration sur prise réelle — que le cadrage identifie déjà comme un point
 > de vigilance. `halj analyze --source file --input prise.wav` est fait pour ça.
 
+## L'appli s'ignore elle-même
+
+Posé sur la table, un téléphone entend son propre haut-parleur mieux qu'il
+n'entend l'instrument. La boucle se referme alors deux fois : le drone nourrit
+le chroma, le chroma confirme la tonalité du drone, et la tonalité se fige sur
+elle-même quoi que joue l'instrumentiste ; et le niveau ne redescend jamais,
+donc la densité non plus, donc la couche rythmique tourne toute seule et
+entretient le niveau.
+
+Tout part d'**une seule mesure** : la part de ce qu'on entend qui n'est pas
+nous. Le niveau réinjecté n'est pas modélisable — haut-parleur, pièce,
+distance — donc il n'est pas modélisé, il est **mesuré**. Un plancher glissant
+apprend, bin par bin, le niveau de ce qui ne bouge pas ; ce qui le dépasse est
+ce que quelqu'un vient d'ajouter. De là découlent, sans autre estimateur, le
+spectre nettoyé qui nourrit le chroma, le niveau de jeu, et le moment où
+l'analyse peut de nouveau se prononcer sur une tonalité.
+
+Trois choix portent le résultat, et chacun vient d'une mesure :
+
+- **le plancher descend lentement, pas instantanément.** La tentation serait
+  d'en faire un suiveur de minimum. Mais un drone *bat* : deux partiels voisins
+  se renforcent et s'annulent tour à tour, et un minimum se pose au creux du
+  battement. Mesuré sur un drone à trois voix — creux 4.7, moyenne 15.0 : le
+  minimum sous-estime d'un facteur trois ce qu'il faut retirer.
+- **on retire exactement le plancher, ni plus ni moins.** À 0.9 on laisserait
+  fuir 10 % du drone sur *tous* ses partiels, assez pour qu'il continue à
+  dicter sa tonalité ; au-delà de 1.0 on mordrait sur le jeu. Ce qui dépasse le
+  plancher est, par construction, ce que le joueur a ajouté — y compris quand
+  il joue la note du drone, ce qui arrive tout le temps puisque c'est sa
+  tonique.
+- **le plancher continue de monter pendant le jeu.** Ce n'est pas une
+  négligence : bin par bin, une ligne mélodique se déplace — une note tient une
+  demi-seconde là où le plancher met deux secondes à monter, elle est partie
+  avant d'avoir compté. Conditionner cette montée à « personne ne joue »
+  fabriquerait au contraire un verrou : plancher figé, donc résidu élevé, donc
+  « ça joue », donc plancher figé — mesuré, une ligne jouée 4 dB sous le drone
+  disparaissait complètement au bout de sept secondes. Un sursis après chaque
+  attaque protège le seul cas où l'argument tombe : une note réellement tenue.
+
+Les impacts rythmiques sont traités à part, parce qu'on connaît leur date à
+l'avance : autour de chacun, le seuil de détection d'attaque est **relevé**
+plutôt que coupé. Une vraie attaque par-dessus le kick passe encore, le kick
+seul non — couper franchement mangerait toutes les attaques jouées sur le
+temps, c'est-à-dire exactement celles qu'on veut entendre.
+
+**Ce que ça donne.** Cas extrême du banc de test — drone quatre décibels
+*au-dessus* de l'instrument, tenu en permanence, même bande de fréquences :
+
+| | sans auto-écoute | avec |
+|---|---|---|
+| masse du chroma prise par les trois notes du drone | 63 % | **13 %** |
+| masse du chroma laissée à la ligne jouée | 34 % | **74 %** |
+| niveau de jeu, micro n'entendant que l'appli | 0.60 | **0.001** |
+| densité, micro n'entendant que l'appli | 0.33 | **0.000** |
+
+Au casque, il n'y a rien à retirer : le plancher tombe à zéro, la correction
+disparaît d'elle-même. Aucun réglage à faire pour passer d'un cas à l'autre.
+
+**Ce que ça ne fait pas.** Ce n'est pas un annulateur d'écho : sans signal de
+référence aligné à l'échantillon, on retire un *niveau*, pas une forme d'onde.
+Le résidu suffit encore, parfois, à faire pencher une corrélation K-S entre
+deux tonalités voisines. C'est pourquoi la version web active *aussi*
+l'annulateur du navigateur en mode haut-parleur — lui a le signal de sortie et
+l'horloge matérielle — et pourquoi l'autre moitié de la réponse est ailleurs :
+une appli qui tient sa propre grille d'accords ne dépend plus d'entendre juste
+à chaque instant.
+
+## L'appli propose, au lieu de seulement suivre
+
+Un accompagnement qui ne fait que suivre finit par tourner en rond. Le
+directeur harmonique (`generative/harmony.py`) renverse le rapport : il tient
+une grille écrite en degrés — donc transposable telle quelle dans la tonalité
+détectée — l'avance à la mesure, et ne s'en détourne que si le jeu insiste.
+
+Un seul réglage, `agency` (`--agency`, ou le curseur *initiative* dans la page) :
+
+| valeur | comportement |
+|---|---|
+| `0` | suiveur pur : l'accord est la triade de la tonalité détectée, comme avant ce module |
+| `0.5` | conversation : l'appli déroule sa grille, mais cède dès que le jeu désigne clairement un autre accord |
+| `1` | meneur : la grille tient bon, quoi que joue l'instrumentiste |
+
+Le vote du joueur est lu dans le chroma accumulé depuis le dernier changement :
+la masse tombant dans l'accord, plus un bonus sur la fondamentale. Ce bonus
+n'est pas cosmétique — La mineur et Do majeur partagent deux notes sur trois,
+c'est la fondamentale qui les sépare.
+
+Trois détails font la différence entre une grille et une grille jouable :
+
+- **on ne se réancre pas sur un degré de sa propre grille.** Ancre en La
+  mineur, le joueur passe sur Fa, le détecteur annonce « Fa majeur » — mais Fa
+  est le VI<sup>e</sup> degré : rien n'a bougé, c'est la grille qui fonctionne.
+  Sans ce filtre, l'ancre suivait chaque accord et la grille repartait de zéro
+  toutes les deux mesures.
+- **le drone glisse au plus court, sans dériver.** Prendre l'octave la plus
+  proche à chaque accord est un cliquet : mesuré sur Am-F-C-G, le drone perdait
+  une octave et demie en deux tours et finissait sous le seuil d'audition d'un
+  haut-parleur de téléphone. Un rappel vers le registre nominal borne l'écart à
+  une octave.
+- **le changement s'annonce.** Le dernier pas avant un nouvel accord est
+  accentué, et la page affiche l'accord suivant avec le temps qu'il reste : une
+  grille qui bouge sans prévenir ne se joue pas.
+
 ## Protocole OSC
 
 Python envoie, SuperCollider reçoit (port 57120, préfixe `/jam` configurable) :
@@ -170,6 +297,7 @@ Python envoie, SuperCollider reçoit (port 57120, préfixe `/jam` configurable) 
 |---|---|---|
 | `/jam/drone` | `amp` `glide` | démarre / reconfigure le drone |
 | `/jam/key` | `tonic` (0-11) `mode` (`maj`/`min`) `root_hz` `confidence` | tonalité détectée |
+| `/jam/chord` | `root` (0-11) `quality` `root_hz` `decision` | accord tenu par le drone, et qui l'a décidé |
 | `/jam/energy` | `level` `density` | niveau de jeu et densité rythmique |
 | `/jam/onset` | `strength` | une attaque vient d'être détectée |
 | `/jam/kick` / `/jam/perc` | `velocity` `step` | impact de la grille |
@@ -184,7 +312,12 @@ Tous les réglages vivent dans `halj/config.py` (dataclasses figées, commentée
 une par une). Pour surcharger, un JSON partiel suffit :
 
 ```json
-{ "rhythm": { "bpm": 96.0, "steps": 16 }, "drone": { "amp": 0.4 } }
+{
+  "rhythm": { "bpm": 96.0, "steps": 16 },
+  "drone": { "amp": 0.4 },
+  "harmony": { "agency": 0.8, "bars_per_chord": 2 },
+  "self_listen": { "enabled": true, "play_gate": 0.04 }
+}
 ```
 
 ```bash
@@ -212,11 +345,17 @@ une prise enregistrée, pas à jouer en direct.
 pip install -e ".[dev]" && pytest
 ```
 
-255 tests, ~33 s, sans matériel audio. Ils couvrent les motifs euclidiens
+308 tests, ~23 s, sans matériel audio. Ils couvrent les motifs euclidiens
 (contre les valeurs de référence connues : tresillo, cinquillo…), la détection
 de tonalité, l'hystérésis, la détection d'attaques (jeu doux/fort, note tenue,
 rumble, temps mort), les filtres, le protocole OSC sur une vraie socket UDP, et
 la chaîne complète du signal jusqu'aux messages.
+
+L'auto-écoute et la grille d'accords sont testées sur ce qu'elles changent, pas
+sur leur mécanique : une ligne mélodique rejouée par-dessus un drone plus fort
+qu'elle doit rendre au joueur la majorité du chroma, un drone seul ne doit plus
+faire vivre le rythme, et le point de bascule entre mener et suivre doit tomber
+au même endroit des deux côtés du portage.
 
 Les tests de parité web (`tests/test_web.py`) pilotent un Chromium sans
 interface ; ils sont ignorés si Playwright n'est pas installé :
@@ -232,7 +371,7 @@ transcription d'accords fine, interface graphique évoluée. Le tempo de la
 grille est donc un paramètre fixe (`--bpm`) — c'est la densité de jeu, pas
 l'horloge, qui fait vivre le rythme.
 
-Deux limites à connaître, au-delà de ce périmètre :
+Trois limites à connaître, au-delà de ce périmètre :
 
 - Les impacts rythmiques sont datés côté Python et envoyés en UDP, ce qui
   introduit une gigue de l'ordre de la milliseconde sur la grille. Acceptable
@@ -241,3 +380,8 @@ Deux limites à connaître, au-delà de ce périmètre :
 - La tonique et son relatif restent proches au sens des profils K-S. La marge
   d'hystérésis les sépare en pratique, mais une progression réellement
   ambiguë (Am-F-C-G) peut légitimement basculer entre les deux.
+- L'auto-écoute retire un *niveau*, pas une forme d'onde : elle n'a pas de
+  signal de référence aligné à l'échantillon. Sur haut-parleur, un résidu
+  subsiste et peut encore faire pencher une corrélation K-S entre deux
+  tonalités voisines. Si l'appli ne vous entend plus, la parade est de baisser
+  le drone plutôt que de monter le volume.

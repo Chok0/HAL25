@@ -132,6 +132,93 @@ class DroneConfig:
 
 
 @dataclass(frozen=True)
+class SelfListenConfig:
+    """Ce que l'appli retire de son analyse parce qu'elle vient de le jouer.
+
+    Sur haut-parleur — un telephone pose sur la table — le micro reentend le
+    drone et les percussions emises a l'instant. Sans precaution la boucle se
+    referme : le drone nourrit le chroma, le chroma confirme la tonalite du
+    drone, et la tonalite se fige sur elle-meme quoi que joue l'instrumentiste.
+    """
+
+    enabled: bool = True
+    # Demi-largeur du masque autour d'un partiel du drone, en demi-tons. Seuls
+    # ces bins sont corriges : une note du joueur qui ne tombe pas sur un
+    # partiel du drone traverse l'analyse intacte.
+    band_semitones: float = 0.6
+    # Harmoniques modelisees par oscillateur : au-dela, la dent de scie est
+    # sous le plancher de bruit du haut-parleur.
+    partials: int = 10
+    # Suiveur de plancher : c'est lui qui *mesure* le niveau reinjecte, qu'aucun
+    # modele ne peut predire (haut-parleur, piece, distance). Il ne monte que
+    # quand personne ne joue, avec cette constante de temps.
+    floor_rise_tau_s: float = 2.0
+    # Descente du plancher. Lente a dessein : un drone bat (deux partiels
+    # voisins oscillent a quelques hertz) et une descente instantanee — un vrai
+    # suiveur de minimum — se poserait au creux du battement, sous-estimant le
+    # niveau tenu d'un facteur trois. Doit rester assez vive pour suivre un
+    # changement d'accord, dont le glissando dure 1.8 s.
+    floor_fall_tau_s: float = 0.8
+    # Fraction du plancher retiree. 1.0 retire exactement ce qui a ete mesure,
+    # et rien de plus : ce qui depasse le plancher est, par construction, ce
+    # que le joueur a ajoute. En dessous, on laisse fuir une part constante du
+    # drone — a 0.9, c'est 10 % du drone sur *tous* ses partiels, assez pour
+    # qu'il continue a dicter sa tonalite. Au-dessus, on mord sur le jeu.
+    subtraction: float = 1.0
+    # Lissage de la part "pas nous" du spectre, en secondes.
+    play_smooth_tau_s: float = 0.4
+    # En dessous de cette part, on considere que le micro n'entend que l'appli.
+    # Mesure sur un drone tenu : moins de 1 % lui survit ; une ligne melodique
+    # jouee 10 dB *sous* ce drone en laisse encore 8 a 10 %.
+    play_gate: float = 0.04
+    # Garde-fou sur la mise en place du plancher, en secondes. Normalement elle
+    # se termine d'elle-meme, quand la part "pas nous" retombe sous le portail ;
+    # ce plafond ne sert qu'au cas ou l'instrumentiste joue deja au demarrage,
+    # ou cette retombee n'arrive jamais.
+    startup_s: float = 3.0
+    # Le plancher ne monte pas non plus dans la seconde qui suit une attaque :
+    # une note tenue ne doit pas etre prise pour le fond.
+    freeze_after_onset_s: float = 0.8
+    # Fenetre autour d'un impact rythmique emis, ou le seuil d'attaque est
+    # releve (et non coupe) : une vraie attaque par-dessus le kick passe encore.
+    hit_pre_s: float = 0.02
+    hit_post_s: float = 0.09
+    hit_threshold_boost: float = 3.0
+    # Latence sortie -> micro : le temps que l'impact sorte du haut-parleur et
+    # revienne. Sur telephone, la chaine audio ajoute typiquement 20-60 ms.
+    hit_latency_s: float = 0.03
+
+
+@dataclass(frozen=True)
+class HarmonyConfig:
+    """Agency : l'appli propose une grille d'accords au lieu de subir la tonalite.
+
+    Un accompagnement qui ne fait que suivre finit par tourner en rond — et,
+    sur haut-parleur, par se suivre lui-meme. Ici l'appli tient une grille,
+    l'avance a la mesure, et n'en change que si le joueur insiste vraiment.
+    """
+
+    enabled: bool = True
+    # 0 = suiveur pur (l'accord est la tonique detectee, comportement d'avant),
+    # 1 = meneur (l'appli deroule sa grille et ne cede qu'a une insistance nette).
+    agency: float = 0.5
+    bars_per_chord: int = 1
+    # Nombre de tours de grille avant d'en proposer une autre.
+    renew_after_loops: int = 2
+    # Marge dont le jeu doit battre l'accord prevu pour detourner la grille,
+    # interpolee entre ces deux bornes selon `agency`. La borne haute depasse
+    # l'ecart maximal possible entre deux accords (1.5, tout le chroma sur la
+    # fondamentale d'un seul) : a `agency` = 1, la grille ne cede plus du tout.
+    follow_margin_min: float = 0.0
+    follow_margin_max: float = 1.5
+    # Poids supplementaire de la fondamentale dans le vote du joueur : sans lui
+    # Am et C, qui partagent deux notes sur trois, seraient indiscernables.
+    root_weight: float = 0.5
+    # En dessous de cette masse dans l'accord, le vote du joueur est ignore.
+    min_vote: float = 0.35
+
+
+@dataclass(frozen=True)
 class OscConfig:
     host: str = "127.0.0.1"
     port: int = 57120  # sclang, pas scsynth (57110)
@@ -146,6 +233,8 @@ class Config:
     energy: EnergyConfig = field(default_factory=EnergyConfig)
     rhythm: RhythmConfig = field(default_factory=RhythmConfig)
     drone: DroneConfig = field(default_factory=DroneConfig)
+    self_listen: SelfListenConfig = field(default_factory=SelfListenConfig)
+    harmony: HarmonyConfig = field(default_factory=HarmonyConfig)
     osc: OscConfig = field(default_factory=OscConfig)
 
     @property
@@ -165,6 +254,8 @@ class Config:
             "energy": EnergyConfig,
             "rhythm": RhythmConfig,
             "drone": DroneConfig,
+            "self_listen": SelfListenConfig,
+            "harmony": HarmonyConfig,
             "osc": OscConfig,
         }
         kwargs: dict[str, Any] = {}

@@ -85,11 +85,21 @@ class OnsetDetector:
         self._buffer[:] = 0.0
         self._highpass.reset()
 
-    def process(self, hop: np.ndarray, time_s: float | None = None) -> Onset | None:
+    def process(
+        self,
+        hop: np.ndarray,
+        time_s: float | None = None,
+        threshold_scale: float = 1.0,
+    ) -> Onset | None:
         """Consomme un hop, retourne une attaque si elle vient d'etre confirmee.
 
         L'attaque retournee correspond au hop *precedent* (retard d'un hop,
         soit ~6 ms a 44.1 kHz) : c'est le prix de la confirmation du pic.
+
+        `threshold_scale` releve temporairement le seuil : l'auto-ecoute s'en
+        sert autour des impacts que l'appli vient d'emettre (cf. `selfmask`).
+        Relever plutot que couper, parce qu'une attaque jouee pile sur le kick
+        doit encore passer.
         """
         hop = np.asarray(hop, dtype=np.float64).reshape(-1)
         if hop.shape[0] != self.audio.hop_size:
@@ -126,7 +136,9 @@ class OnsetDetector:
         flux = numerator / (denominator + self._energy_epsilon)
         self._prev_magnitude = magnitude
 
-        threshold = self._threshold()
+        # La mediane s'alimente du flux brut : le releve de seuil est
+        # circonstanciel, il ne doit pas contaminer la statistique locale.
+        threshold = self._threshold() * max(threshold_scale, 1e-9)
         self._history.append(flux)
         self.last_flux = flux
         self.last_threshold = threshold
@@ -186,7 +198,12 @@ class AubioOnsetDetector:
         self._detector.reset()
         self._time_s = 0.0
 
-    def process(self, hop: np.ndarray, time_s: float | None = None) -> Onset | None:
+    def process(
+        self,
+        hop: np.ndarray,
+        time_s: float | None = None,
+        threshold_scale: float = 1.0,
+    ) -> Onset | None:
         now = self._time_s if time_s is None else time_s
         self._time_s = now + self._hop_s
         hop = np.ascontiguousarray(hop, dtype=np.float32)
@@ -199,6 +216,11 @@ class AubioOnsetDetector:
         self.last_flux = float(self._detector.get_descriptor())
         self.last_threshold = float(self._detector.get_thresholded_descriptor())
         if not fired:
+            return None
+        # aubio decide de son seuil en interne : impossible de le relever pour
+        # une trame. On ne peut que rejeter apres coup, donc l'auto-ecoute est
+        # ici un vrai masque et non un relevement — limite du backend.
+        if threshold_scale > 1.0:
             return None
         return Onset(time_s=now, strength=max(1.0, abs(self.last_flux)))
 

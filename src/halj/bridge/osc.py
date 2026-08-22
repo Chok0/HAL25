@@ -8,6 +8,8 @@ complet sans analyser quoi que ce soit).
 Protocole (prefixe configurable, /jam par defaut) :
 
     /jam/key    tonic:int(0-11) mode:str("maj"|"min") root_hz:float conf:float
+    /jam/chord  root:int(0-11) quality:str("maj"|"min"|"sus4") root_hz:float
+                decision:str("lead"|"follow"|"anchor")
     /jam/energy level:float density:float
     /jam/onset  strength:float
     /jam/kick   velocity:float step:int
@@ -21,6 +23,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from ..config import DroneConfig, OscConfig
+from ..generative.harmony import Chord
 from ..notes import Key
 
 
@@ -96,6 +99,7 @@ class JamBridge:
         self.drone = drone or DroneConfig()
         self.energy_epsilon = energy_epsilon
         self._last_key: Key | None = None
+        self._last_chord: tuple[int, str, int] | None = None
         self._last_level: float | None = None
         self._last_density: float | None = None
 
@@ -113,6 +117,32 @@ class JamBridge:
             key.mode,
             float(key.root_hz(self.drone.octave)),
             float(confidence),
+        )
+        return True
+
+    def send_chord(
+        self,
+        chord: Chord,
+        root_hz: float,
+        decision: str = "lead",
+        force: bool = False,
+    ) -> bool:
+        """Emet l'accord tenu par le drone. Retourne True si un message est parti.
+
+        La fondamentale est passee explicitement : le directeur harmonique
+        choisit l'octave qui minimise le deplacement, ce que le seul couple
+        (fondamentale, qualite) ne dit pas.
+        """
+        signature = (int(chord.root), chord.quality, int(round(root_hz)))
+        if not force and signature == self._last_chord:
+            return False
+        self._last_chord = signature
+        self.sink.send(
+            self._address("chord"),
+            int(chord.root),
+            chord.quality,
+            float(root_hz),
+            str(decision),
         )
         return True
 

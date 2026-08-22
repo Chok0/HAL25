@@ -253,3 +253,233 @@ def test_la_densite_suit_le_niveau(page):
     )
     assert densites == sorted(densites)
     assert densites[0] < 0.05 < densites[-1]
+
+
+# --- parite de l'auto-ecoute ------------------------------------------
+
+
+def test_le_plancher_reagit_comme_en_python(page, config):
+    """Meme signal, meme plancher : c'est la mesure qui pilote tout le reste."""
+    from halj.analysis.selfmask import FloorFollower
+
+    rise, fall, dt = 2.0, 0.8, 0.046
+    niveaux = [0.0] + [1.0] * 60 + [0.2] * 30
+
+    attendu = FloorFollower(rise, fall)
+    for niveau in niveaux:
+        attendu.update(np.array([niveau]), dt)
+
+    obtenu = js(
+        page,
+        f"""(() => {{
+            const f = new HALJ.FloorFollower({rise}, {fall});
+            for (const v of {niveaux}) f.update([v], {dt});
+            return f.value[0];
+        }})()""",
+    )
+    assert obtenu == pytest.approx(float(attendu.value[0]), rel=1e-9)
+
+
+def test_le_gel_du_plancher_est_le_meme(page):
+    from halj.analysis.selfmask import FloorFollower
+
+    attendu = FloorFollower(2.0, 0.8)
+    for _ in range(50):
+        attendu.update(np.array([0.1]), 0.046)
+    for _ in range(50):
+        attendu.update(np.array([1.0]), 0.046, allow_rise=False)
+
+    obtenu = js(
+        page,
+        """(() => {
+            const f = new HALJ.FloorFollower(2.0, 0.8);
+            for (let i = 0; i < 50; i++) f.update([0.1], 0.046);
+            for (let i = 0; i < 50; i++) f.update([1.0], 0.046, false);
+            return f.value[0];
+        })()""",
+    )
+    assert obtenu == pytest.approx(float(attendu.value[0]), rel=1e-9)
+
+
+def test_les_partiels_du_drone_sont_les_memes(page):
+    from halj.analysis.selfmask import drone_partials
+
+    attendu = drone_partials(110.0, (0, 3, 7), 6, 2093.0)
+    obtenu = js(page, "HALJ.dronePartials(110, [0, 3, 7], 6, 2093)")
+    assert obtenu == pytest.approx(attendu, rel=1e-9)
+
+
+def test_le_drone_disparait_du_spectre_analyse(page, config):
+    """Le resultat qui compte : apres mesure, l'appli ne s'entend plus."""
+    resultat = js(
+        page,
+        """(() => {
+            const bins = 512, binHz = 5.383;
+            const guard = new HALJ.SelfListen(
+                HALJ.CONFIG.selfListen, binHz, bins, 73.4, 2093);
+            guard.setDrone(110, [0, 3, 7]);
+            const drone = new Float64Array(bins);
+            for (const f of HALJ.dronePartials(110, [0, 3, 7], 10, 2093)) {
+                drone[Math.round(f / binHz)] += 1.0;
+            }
+            for (let i = 0; i < 400; i++) guard.cleanSpectrum(drone, 0.046);
+            const propre = guard.cleanSpectrum(drone, 0.046);
+            let reste = 0, total = 0;
+            for (let i = 0; i < bins; i++) { reste += propre[i]; total += drone[i]; }
+            return { reste: reste / total, ratio: guard.playRatio,
+                     joue: guard.playing, niveau: guard.cleanRms(0.05) };
+        })()""",
+    )
+    assert resultat["reste"] < 0.05  # le drone a disparu du spectre analyse
+    assert resultat["ratio"] < config.self_listen.play_gate
+    assert resultat["joue"] is False
+    assert resultat["niveau"] == 0.0  # donc plus de niveau de jeu, donc plus de rythme
+
+
+def test_le_seuil_d_attaque_est_releve_autour_d_un_impact(page, config):
+    valeurs = js(
+        page,
+        """(() => {
+            const guard = new HALJ.SelfListen(
+                HALJ.CONFIG.selfListen, 5.383, 64, 73.4, 2093);
+            guard.setDrone(110, [0]);
+            guard.noteHit(1.0);
+            const l = HALJ.CONFIG.selfListen.hitLatencyS;
+            return [guard.thresholdScale(0.9), guard.thresholdScale(1.0 + l),
+                    guard.thresholdScale(1.0 + l + 0.5)];
+        })()""",
+    )
+    assert valeurs == [1.0, config.self_listen.hit_threshold_boost, 1.0]
+
+
+# --- parite de la grille d'accords ------------------------------------
+
+
+def test_les_grilles_sont_les_memes(page):
+    from halj.generative.harmony import PROGRESSIONS, progression_for
+    from halj.notes import Key
+
+    assert js(page, "HALJ.PROGRESSIONS") == {
+        mode: [list(grille) for grille in grilles]
+        for mode, grilles in PROGRESSIONS.items()
+    }
+    for mode in ("min", "maj"):
+        for index in range(4):
+            attendu = [c.name for c in progression_for(Key(9, mode), index)]
+            obtenu = js(
+                page,
+                f"HALJ.progressionFor({{tonic: 9, mode: '{mode}'}}, {index})"
+                ".map(HALJ.chordName)",
+            )
+            assert obtenu == attendu
+
+
+def test_le_vote_du_joueur_est_calcule_pareil(page):
+    from halj.generative.harmony import Chord, chord_score
+
+    chroma = [0.30, 0.02, 0.04, 0.03, 0.18, 0.05, 0.02, 0.16, 0.03, 0.11, 0.02, 0.04]
+    for root, quality in ((9, "min"), (0, "maj"), (5, "maj"), (7, "maj")):
+        attendu = chord_score(Chord(root, quality), chroma)
+        obtenu = js(
+            page,
+            f"HALJ.chordScore({{root: {root}, quality: '{quality}'}}, {chroma})",
+        )
+        assert obtenu == pytest.approx(attendu, rel=1e-9)
+
+
+def test_la_conduite_des_voix_est_la_meme(page):
+    from halj.generative.harmony import voiced_root_hz
+
+    precedente_py, sequence = None, []
+    for _ in range(3):
+        for pitch_class in (9, 5, 0, 7):
+            precedente_py = voiced_root_hz(pitch_class, 2, precedente_py)
+            sequence.append(precedente_py)
+
+    obtenu = js(
+        page,
+        """(() => {
+            let precedente = null;
+            const out = [];
+            for (let tour = 0; tour < 3; tour++) {
+                for (const pc of [9, 5, 0, 7]) {
+                    precedente = HALJ.voicedRootHz(pc, 2, precedente);
+                    out.push(precedente);
+                }
+            }
+            return out;
+        })()""",
+    )
+    assert obtenu == pytest.approx(sequence, rel=1e-9)
+
+
+def test_le_directeur_deroule_la_meme_grille(page):
+    from halj.config import HarmonyConfig
+    from halj.generative.harmony import HarmonyDirector
+    from halj.notes import Key
+
+    directeur = HarmonyDirector(HarmonyConfig(agency=1.0), steps_per_bar=16)
+    directeur.observe_key(Key(9, "min"))
+    attendu = [directeur.on_step(step).chord.name for step in (16, 32, 48, 64, 80)]
+
+    obtenu = js(
+        page,
+        """(() => {
+            const cfg = Object.assign({}, HALJ.CONFIG.harmony, {agency: 1.0});
+            const d = new HALJ.HarmonyDirector(cfg, 16);
+            d.observeKey({tonic: 9, mode: 'min'}, 0);
+            return [16, 32, 48, 64, 80].map((s) => HALJ.chordName(d.onStep(s).chord));
+        })()""",
+    )
+    assert obtenu == attendu
+
+
+def test_le_directeur_cede_au_meme_moment(page):
+    """Le point de bascule entre mener et suivre doit etre identique des deux cotes."""
+    from halj.config import HarmonyConfig
+    from halj.generative.harmony import HarmonyDirector
+    from halj.notes import Key
+
+    vote = [0.0] * 12
+    for pitch_class in (7, 7, 11, 2):  # sol majeur, fondamentale appuyee
+        vote[pitch_class] += 0.25
+
+    decisions = []
+    for agency in (0.0, 0.25, 0.5, 0.75, 1.0):
+        directeur = HarmonyDirector(HarmonyConfig(agency=agency), steps_per_bar=16)
+        directeur.observe_key(Key(9, "min"))
+        directeur.observe_chroma(vote)
+        decisions.append(directeur.on_step(16).decision)
+
+    obtenu = js(
+        page,
+        f"""(() => {{
+            return [0.0, 0.25, 0.5, 0.75, 1.0].map((agency) => {{
+                const cfg = Object.assign({{}}, HALJ.CONFIG.harmony, {{agency}});
+                const d = new HALJ.HarmonyDirector(cfg, 16);
+                d.observeKey({{tonic: 9, mode: 'min'}}, 0);
+                d.observeChroma({vote});
+                return d.onStep(16).decision;
+            }});
+        }})()""",
+    )
+    assert obtenu == decisions
+
+
+def test_les_constantes_d_auto_ecoute_sont_alignees(page, config):
+    cfg = js(page, "HALJ.CONFIG")
+    self_listen, harmony = cfg["selfListen"], cfg["harmony"]
+    assert self_listen["subtraction"] == config.self_listen.subtraction
+    assert self_listen["playGate"] == config.self_listen.play_gate
+    assert self_listen["floorRiseTauS"] == config.self_listen.floor_rise_tau_s
+    assert self_listen["floorFallTauS"] == config.self_listen.floor_fall_tau_s
+    assert self_listen["playSmoothTauS"] == config.self_listen.play_smooth_tau_s
+    assert self_listen["bandSemitones"] == config.self_listen.band_semitones
+    assert self_listen["partials"] == config.self_listen.partials
+    assert self_listen["hitThresholdBoost"] == config.self_listen.hit_threshold_boost
+    assert self_listen["startupS"] == config.self_listen.startup_s
+    assert harmony["agency"] == config.harmony.agency
+    assert harmony["rootWeight"] == config.harmony.root_weight
+    assert harmony["followMarginMax"] == config.harmony.follow_margin_max
+    assert harmony["minVote"] == config.harmony.min_vote
+    assert harmony["barsPerChord"] == config.harmony.bars_per_chord

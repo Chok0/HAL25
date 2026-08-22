@@ -17,6 +17,7 @@ from .analysis.engine import AnalysisEngine, AnalysisFrame
 from .audio.sources import AudioSource
 from .bridge.osc import JamBridge
 from .config import Config
+from .generative.harmony import HarmonyDirector, voiced_root_hz
 from .generative.scheduler import RhythmScheduler
 from .ui.terminal import TerminalDisplay
 
@@ -28,6 +29,7 @@ class SessionStats:
     frames: int = 0
     onsets: int = 0
     key_changes: int = 0
+    chord_changes: int = 0
     hits: dict[str, int] = field(default_factory=lambda: {"kick": 0, "perc": 0})
     duration_s: float = 0.0
     wall_time_s: float = 0.0
@@ -44,6 +46,7 @@ class SessionStats:
             f"{self.duration_s:.1f}s analysees en {self.wall_time_s:.1f}s "
             f"(x{self.realtime_factor:.1f} temps reel) | "
             f"{self.onsets} attaques | {self.key_changes} changements de tonalite | "
+            f"{self.chord_changes} accords | "
             f"{self.hits['kick']} kicks, {self.hits['perc']} percus"
         )
 
@@ -79,9 +82,17 @@ class JamSession:
             config, chroma_backend=chroma_backend, onset_backend=onset_backend
         )
         self.scheduler = RhythmScheduler(config.rhythm)
+        # Le directeur harmonique partage la grille du sequenceur : les accords
+        # changent a la mesure, pas au milieu d'un motif.
+        self.harmony = (
+            HarmonyDirector(config.harmony, steps_per_bar=config.rhythm.steps)
+            if config.harmony.enabled and enable_drone
+            else None
+        )
         self.stats = SessionStats()
         self._stop = False
         self._last_key = None
+        self._drone_root_hz: float | None = None
 
     def stop(self) -> None:
         """Demande l'arret ; la boucle sort a la fin du bloc courant."""
@@ -132,15 +143,76 @@ class JamSession:
                 self.bridge.send_key(frame.key, frame.key_confidence)
             self.bridge.send_energy(frame.level, frame.density)
 
+        self._advance_harmony(frame)
+
         if self.enable_rhythm:
             self.scheduler.set_density(frame.density)
             for event in self.scheduler.advance(frame.time_s):
                 self.stats.hits[event.voice] += 1
+                # Declare l'impact au moteur d'analyse : dans une seconde il
+                # sera dans le micro, et il ne doit pas y passer pour une
+                # attaque du joueur.
+                self.engine.note_self_hit(event.time_s)
                 if self.bridge:
-                    self.bridge.send_hit(event.voice, event.velocity, event.step)
+                    self.bridge.send_hit(
+                        event.voice, self._cued(event.velocity, frame), event.step
+                    )
 
         if self.display:
-            self.display.render(frame, self.scheduler if self.enable_rhythm else None)
+            self.display.render(
+                frame,
+                self.scheduler if self.enable_rhythm else None,
+                harmony=self.harmony,
+            )
+
+    # -- grille d'accords ----------------------------------------------
+
+    def _step_index(self, time_s: float) -> int:
+        """Pas de la grille a cet instant, cale sur le meme zero que le sequenceur."""
+        return int(time_s / self.scheduler.step_duration)
+
+    def _advance_harmony(self, frame: AnalysisFrame) -> None:
+        """Ancre, nourrit et fait avancer la grille d'accords."""
+        if self.harmony is None:
+            if self.enable_drone and frame.key is not None:
+                # Sans directeur, le drone tient la tonalite : c'est quand meme
+                # ce qu'il faut declarer a l'auto-ecoute.
+                intervals = (0, 3, 7) if frame.key.mode == "min" else (0, 4, 7)
+                self.engine.set_self_drone(
+                    frame.key.root_hz(self.config.drone.octave), intervals
+                )
+            return
+
+        if frame.chroma is not None:
+            self.harmony.observe_chroma(frame.chroma)
+
+        step = self._step_index(frame.time_s)
+        change = self.harmony.observe_key(frame.key, step) or self.harmony.on_step(step)
+        if change is None:
+            return
+
+        self.stats.chord_changes += 1
+        root_hz = voiced_root_hz(
+            change.chord.root, self.config.drone.octave, self._drone_root_hz
+        )
+        self._drone_root_hz = root_hz
+        # Le drone joue cet accord : le moteur d'analyse peut donc le retirer
+        # de ce que le micro lui renvoie.
+        self.engine.set_self_drone(root_hz, change.chord.intervals)
+        if self.bridge:
+            self.bridge.send_chord(change.chord, root_hz, change.decision)
+
+    def _cued(self, velocity: float, frame: AnalysisFrame) -> float:
+        """Accentue le dernier pas avant un changement d'accord.
+
+        Une grille qui bouge sans prevenir ne se joue pas : l'accent annonce
+        que l'accord suivant arrive, comme le ferait un batteur.
+        """
+        if self.harmony is None:
+            return velocity
+        if self.harmony.steps_to_change(self._step_index(frame.time_s)) > 1:
+            return velocity
+        return round(min(1.0, velocity * 1.3), 4)
 
     def _pace(self, audio_time_s: float, wall_start: float) -> None:
         """Freine pour coller au temps reel quand la source ne le fait pas."""
