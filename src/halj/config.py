@@ -219,6 +219,81 @@ class HarmonyConfig:
 
 
 @dataclass(frozen=True)
+class ConversationConfig:
+    """A qui est le tour — et ce que l'appli fait quand c'est le sien.
+
+    Dans une jam, le lead circule, et il circule par la place qu'on laisse. Un
+    accompagnement a initiative fixe suit bien ou mene bien, mais il ne repond
+    pas : on joue devant lui, pas avec lui.
+    """
+
+    enabled: bool = True
+    # Fenetre sur laquelle se juge la place prise par l'instrumentiste, en
+    # montee et en descente. L'asymetrie dit tout du comportement voulu : on
+    # entend en une seconde que quelqu'un relance, alors qu'il faut plusieurs
+    # secondes de blanc avant de conclure qu'il laisse la place.
+    presence_attack_s: float = 0.6
+    presence_release_s: float = 2.5
+    # Delai avant que la mesure de presence veuille dire quelque chose. Sans
+    # lui, l'appli prendrait la main dans les premieres secondes — la moyenne
+    # part de zero, donc la place semble libre alors que personne n'a encore
+    # eu le temps d'y jouer.
+    engage_s: float = 4.0
+    # Les seuils sont *relatifs* a ce que l'instrumentiste produit d'habitude,
+    # jamais absolus. Une ligne melodique sur un petit instrument a cordes, un
+    # telephone a deux metres, un accompagnement gratte au mediateur : la meme
+    # presence de jeu couvre plus d'un ordre de grandeur. Un seuil fixe
+    # conclurait "il ne joue plus" chez l'un et "il n'arrete jamais" chez
+    # l'autre. La reference est la presence typique, tenue par un suiveur qui
+    # monte vite et redescend en une minute.
+    reference_release_s: float = 60.0
+    # Plancher de cette reference : sinon, apres un long silence, le moindre
+    # souffle passerait pour du jeu.
+    reference_floor: float = 0.05
+    # Fraction de la presence typique en dessous de laquelle la place est
+    # consideree libre — un partenaire entreprenant s'y autorise plus tot.
+    free_ratio_min: float = 0.20
+    free_ratio_max: float = 0.55
+    # Largeur de l'hysterese, en fraction elle aussi. Sans elle, le lead
+    # clignoterait a chaque note.
+    hysteresis_ratio: float = 0.25
+    # Delai avant de prendre la main, et avant de la rendre. L'asymetrie est le
+    # coeur du comportement : on met plusieurs secondes a s'autoriser a mener,
+    # et moins d'une a se ranger quand l'autre relance. Un partenaire qui
+    # n'ecoute pas est pire qu'un partenaire muet.
+    take_s_min: float = 1.2
+    take_s_max: float = 5.0
+    give_s_min: float = 0.4
+    give_s_max: float = 1.6
+    # En dessous / au-dessus de ces valeurs d'initiative, le lead ne circule
+    # plus : le curseur au minimum donne un pur accompagnateur, au maximum un
+    # meneur qui ne rend jamais la main.
+    never_leads_below: float = 0.02
+    always_leads_above: float = 0.98
+    # Initiative harmonique effective selon le tour : l'appli tient sa grille
+    # quand elle mene, se laisse detourner quand elle accompagne.
+    lead_agency: float = 0.85
+    follow_agency: float = 0.30
+    # Plancher de densite rythmique quand l'appli accompagne. C'est lui qui
+    # empeche la percu d'abandonner des qu'on respire : la couche rythmique est
+    # censee motiver le jeu, si elle s'eteint elle motive un silence.
+    follow_density: float = 0.20
+    # ...et quand elle mene. Une relance qui n'insiste pas n'est pas une relance.
+    lead_density_min: float = 0.40
+    lead_density_max: float = 0.70
+    # Phrase de reponse : l'appli joue quelques notes de l'accord en cours
+    # quand elle a la main. Une mesure sur deux — a chaque mesure, ce n'est
+    # plus une reponse, c'est du bavardage.
+    respond: bool = True
+    respond_every_bars: int = 2
+    # Registre de la reponse. Median a dessein : c'est ce qu'un haut-parleur de
+    # telephone reproduit vraiment, alors qu'il ne rend presque rien du drone.
+    response_octave: int = 4
+    # Duree d'une note de reponse, et donc de la pause d'analyse qu'elle impose.
+    response_note_s: float = 0.35
+
+
+@dataclass(frozen=True)
 class OscConfig:
     host: str = "127.0.0.1"
     port: int = 57120  # sclang, pas scsynth (57110)
@@ -235,6 +310,7 @@ class Config:
     drone: DroneConfig = field(default_factory=DroneConfig)
     self_listen: SelfListenConfig = field(default_factory=SelfListenConfig)
     harmony: HarmonyConfig = field(default_factory=HarmonyConfig)
+    conversation: ConversationConfig = field(default_factory=ConversationConfig)
     osc: OscConfig = field(default_factory=OscConfig)
 
     @property
@@ -256,6 +332,7 @@ class Config:
             "drone": DroneConfig,
             "self_listen": SelfListenConfig,
             "harmony": HarmonyConfig,
+            "conversation": ConversationConfig,
             "osc": OscConfig,
         }
         kwargs: dict[str, Any] = {}

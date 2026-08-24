@@ -99,8 +99,11 @@
     padding: 2px 7px; border-radius: 4px; background: var(--panel-2); color: var(--dim);
     border: 1px solid var(--line); margin-left: 6px; vertical-align: 2px;
   }
-  .badge.lead { color: var(--hot); border-color: var(--hot); }
-  .badge.follow { color: var(--ok); border-color: var(--ok); }
+  .badge.lead, .badge.app { color: var(--hot); border-color: var(--hot); }
+  .badge.follow, .badge.player { color: var(--ok); border-color: var(--ok); }
+  .card.answering { border-color: var(--hot); }
+  #wake { font-size: 12px; color: var(--dim); }
+  #wake.on { color: var(--ok); }
   select {
     font: inherit; font-size: 13px; color: var(--text); background: var(--panel-2);
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
@@ -137,6 +140,7 @@
         <option value="headphones">casque</option>
         <option value="speaker">haut-parleur</option>
       </select></label>
+    <span id="wake">veille : écran non maintenu</span>
   </div>
 
   <div id="status">Prêt. « Écouter la guitare » demande l'accès au micro ; « Démo » joue une guitare de synthèse interne.</div>
@@ -156,11 +160,15 @@
         <div class="bar"><i id="level-bar"></i></div>
       </div>
       <div class="meter">
-        <div class="lbl"><span>densité</span><span id="density-val">0.00</span></div>
+        <div class="lbl"><span>densité de la grille</span><span id="density-val">0.00</span></div>
         <div class="bar hot"><i id="density-bar"></i></div>
       </div>
       <div class="meter">
         <div class="lbl"><span>attaque <span id="onset-led"></span></span><span id="onset-count">0</span></div>
+      </div>
+      <div class="meter">
+        <div class="lbl"><span>place que vous prenez</span><span id="presence-val">0.00</span></div>
+        <div class="bar ok"><i id="presence-bar"></i></div>
       </div>
       <div class="meter">
         <div class="lbl"><span>auto-écoute retirée</span><span id="self-val">—</span></div>
@@ -170,7 +178,8 @@
 
     <div>
       <div class="card">
-        <h2>Grille d'accords proposée <span id="decision" class="badge">—</span></h2>
+        <h2>Grille d'accords <span id="lead" class="badge">à vous</span>
+          <span id="decision" class="badge">—</span></h2>
         <div class="chords" id="chords"></div>
         <div class="meter">
           <div class="lbl"><span>prochain accord</span><span id="next-chord">—</span></div>
@@ -272,6 +281,24 @@ const CONFIG = {
     startupS: 3.0,
     freezeAfterOnsetS: 0.8,
     hitPreS: 0.02, hitPostS: 0.09, hitThresholdBoost: 3.0, hitLatencyS: 0.03,
+  },
+  conversation: {
+    enabled: true,
+    presenceAttackS: 0.6,     // on entend en une seconde que quelqu'un relance...
+    presenceReleaseS: 2.5,    // ...mais un blanc met plus longtemps a compter
+    engageS: 4.0,
+    referenceReleaseS: 60.0,  // la presence *typique* du joueur, qui sert d'echelle
+    referenceFloor: 0.05,
+    freeRatioMin: 0.20, freeRatioMax: 0.55,
+    hysteresisRatio: 0.25,
+    takeSMin: 1.2, takeSMax: 5.0,   // prendre la main est lent...
+    giveSMin: 0.4, giveSMax: 1.6,   // ...la rendre est rapide
+    neverLeadsBelow: 0.02, alwaysLeadsAbove: 0.98,
+    leadAgency: 0.85, followAgency: 0.30,
+    followDensity: 0.20,            // la percu n'abandonne jamais tout a fait
+    leadDensityMin: 0.40, leadDensityMax: 0.70,
+    respond: true, respondEveryBars: 2,
+    responseOctave: 4, responseNoteS: 0.35,
   },
   harmony: {
     enabled: true,
@@ -664,6 +691,7 @@ class SelfListen {
     this.elapsed = 0;
     this.timeS = 0;
     this.frozenUntil = -Infinity;
+    this.mutedUntil = -Infinity;
     this.playRatio = 1;
     this.playing = true;
     this.quiet = true;
@@ -694,6 +722,21 @@ class SelfListen {
   }
 
   noteHit(timeS) { this.hits.push(timeS + this.cfg.hitLatencyS); }
+
+  /**
+   * Declare une note que l'appli joue elle-meme dans la bande analysee.
+   *
+   * Le plancher ne peut rien contre elle : une phrase de reponse est
+   * transitoire, exactement comme du jeu. La seule parade honnete est de
+   * suspendre l'analyse le temps que ca sonne — on ne s'ecoute pas parler.
+   */
+  noteVoice(timeS, durationS) {
+    this.hits.push(timeS + this.cfg.hitLatencyS);
+    this.mutedUntil = Math.max(this.mutedUntil, timeS + this.cfg.hitLatencyS + durationS);
+  }
+
+  /** L'appli joue ses propres notes : elle n'ecoute pas. */
+  get muted() { return this.active && this.timeS < this.mutedUntil; }
 
   noteOnset(timeS) { this.frozenUntil = timeS + this.cfg.freezeAfterOnsetS; }
 
@@ -1019,6 +1062,141 @@ function patternForVoice(voice, density, cfg) {
 }
 
 /* ------------------------------------------------------------------ */
+/* A qui est le tour                                                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Dans une jam, le lead circule, et il circule par la place qu'on laisse.
+ * Une initiative fixe suit bien ou mene bien, mais ne repond pas : on joue
+ * devant l'appli, pas avec elle. Ici elle mesure la place que prend
+ * l'instrumentiste et se decide : il occupe le terrain, elle accompagne ; il
+ * laisse un blanc, elle prend la main, releve le rythme et repond.
+ *
+ * Les seuils sont relatifs a ce que l'instrumentiste produit d'habitude,
+ * jamais absolus : une ligne melodique sur un petit instrument a cordes et un
+ * accompagnement gratte couvrent plus d'un ordre de grandeur.
+ */
+
+const PLAYER = "player";
+const APP = "app";
+
+const lerp = (low, high, amount) => low + (high - low) * Math.min(1, Math.max(0, amount));
+
+// Contours de reponse, en degres de l'accord : 0 fondamentale, 1 tierce,
+// 2 quinte, 3 octave, 4 neuvieme. Deterministes, donc identiques a Python.
+const RESPONSE_CONTOURS = [[0, 1, 2, 3], [3, 2, 1, 0], [2, 3, 1, 2], [0, 2, 1, 4]];
+const RESPONSE_POSITIONS = [[0, 4, 8, 12], [0, 3, 6, 11], [2, 4, 8, 11], [0, 4, 7, 12]];
+
+/**
+ * Phrase de reponse sur l'accord en cours.
+ *
+ * Registre median a dessein : c'est celui qu'un petit haut-parleur de
+ * telephone reproduit reellement, alors qu'il ne rend a peu pres rien du
+ * drone. La reponse est donc ce que l'instrumentiste entend en premier.
+ */
+function responsePhrase(chord, barIndex, octave = 4) {
+  const contour = RESPONSE_CONTOURS[barIndex % RESPONSE_CONTOURS.length];
+  const positions = RESPONSE_POSITIONS[barIndex % RESPONSE_POSITIONS.length];
+  const intervals = CHORD_INTERVALS[chord.quality];
+  const ladder = [0, intervals[1], intervals[2], 12, 12 + intervals[1]];
+  const base = 12 * (octave + 1) + chord.root;
+  return contour.map((degree, index) => ({
+    step: positions[index],
+    midi: base + ladder[degree],
+    velocity: index === 0 ? 0.55 : 0.4,
+  }));
+}
+
+class Conversation {
+  constructor(cfg, agency) {
+    this.cfg = cfg;
+    this.baseAgency = Math.min(1, Math.max(0, agency));
+    this.presence = 0;
+    this.reference = 0;
+    this.lead = PLAYER;
+    this.sinceS = 0;
+    this.elapsedS = 0;
+    this.pendingSince = null;
+    this.barsLed = 0;
+  }
+  get typical() { return Math.max(this.reference, this.cfg.referenceFloor); }
+  get freeRatio() { return lerp(this.cfg.freeRatioMin, this.cfg.freeRatioMax, this.baseAgency); }
+  get freeBelow() { return this.typical * this.freeRatio; }
+  get busyAbove() { return this.typical * (this.freeRatio + this.cfg.hysteresisRatio); }
+  get takeS() { return lerp(this.cfg.takeSMax, this.cfg.takeSMin, this.baseAgency); }
+  get giveS() { return lerp(this.cfg.giveSMin, this.cfg.giveSMax, this.baseAgency); }
+  get leads() { return this.lead === APP; }
+
+  /** Integre la densite de jeu. Rend le nouveau meneur s'il a change. */
+  observe(density, timeS) {
+    const dt = this.sinceS ? Math.max(0, timeS - this.sinceS) : 0;
+    const cible = Math.min(1, Math.max(0, density));
+    const tau = cible > this.presence ? this.cfg.presenceAttackS : this.cfg.presenceReleaseS;
+    this.presence += (1 - Math.exp(-dt / Math.max(tau, 1e-6))) * (cible - this.presence);
+    const tauRef = this.presence > this.reference
+      ? this.cfg.presenceAttackS : this.cfg.referenceReleaseS;
+    this.reference += (1 - Math.exp(-dt / Math.max(tauRef, 1e-6)))
+      * (this.presence - this.reference);
+    this.sinceS = timeS;
+    this.elapsedS += dt;
+
+    if (!this.cfg.enabled) return null;
+    // Tant que la mesure ne veut rien dire, on accompagne.
+    if (this.elapsedS < this.cfg.engageS) return null;
+    if (this.baseAgency <= this.cfg.neverLeadsBelow) return this.settle(PLAYER);
+    if (this.baseAgency >= this.cfg.alwaysLeadsAbove) return this.settle(APP);
+
+    const vise = this.lead === PLAYER ? APP : PLAYER;
+    const delai = this.lead === PLAYER ? this.takeS : this.giveS;
+    const atteint = this.lead === PLAYER
+      ? this.presence < this.freeBelow
+      : this.presence > this.busyAbove;
+    if (!atteint) { this.pendingSince = null; return null; }
+    if (this.pendingSince === null) { this.pendingSince = timeS; return null; }
+    if (timeS - this.pendingSince < delai) return null;
+    return this.settle(vise);
+  }
+
+  settle(lead) {
+    this.pendingSince = null;
+    if (lead === this.lead) return null;
+    this.lead = lead;
+    this.barsLed = 0;
+    return lead;
+  }
+
+  /** L'initiative harmonique du moment, pas celle du curseur. */
+  agency() {
+    if (!this.cfg.enabled) return this.baseAgency;
+    return this.leads
+      ? Math.max(this.baseAgency, this.cfg.leadAgency)
+      : Math.min(this.baseAgency, this.cfg.followAgency);
+  }
+
+  /**
+   * La densite reellement jouee : celle mesuree, mais avec un plancher.
+   *
+   * C'est ici que se joue "la percu ne doit pas abandonner" : la couche
+   * rythmique est censee motiver le jeu, si elle s'eteint des qu'on respire
+   * elle motive un silence.
+   */
+  density(measured) {
+    if (!this.cfg.enabled) return measured;
+    const plancher = this.leads
+      ? lerp(this.cfg.leadDensityMin, this.cfg.leadDensityMax, this.baseAgency)
+      : this.cfg.followDensity;
+    return Math.min(1, Math.max(measured, plancher));
+  }
+
+  /** Une mesure sur deux : a chaque mesure, ce n'est plus une reponse. */
+  wantsResponse() {
+    if (!(this.cfg.enabled && this.cfg.respond && this.leads)) return false;
+    this.barsLed++;
+    return this.barsLed % Math.max(1, this.cfg.respondEveryBars) === 1;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Synthese Web Audio                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -1175,6 +1353,44 @@ class Synth {
     return this._noise;
   }
 
+  /**
+   * Corde pincee : l'appli qui prend la parole quand on lui laisse la place.
+   *
+   * Registre median a dessein — c'est celui qui passe reellement sur un petit
+   * haut-parleur, la ou le drone ne s'entend presque pas.
+   */
+  pluck(time, freq, velocity, duration) {
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.exponentialRampToValueAtTime(Math.max(velocity * 0.5, 0.01), time + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+
+    // Corps : une paire d'oscillateurs legerement desaccordes, filtres — assez
+    // pour sonner "pince" sans reconstruire un Karplus-Strong par note.
+    const band = this.ctx.createBiquadFilter();
+    band.type = "lowpass";
+    band.frequency.setValueAtTime(freq * 6, time);
+    band.frequency.exponentialRampToValueAtTime(Math.max(freq * 1.5, 200), time + duration);
+    band.Q.value = 1.0;
+    for (const [type, ratio, level] of [["triangle", 1, 0.6], ["sawtooth", 1.002, 0.25],
+                                        ["sine", 2.01, 0.15]]) {
+      const osc = this.ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.value = freq * ratio;
+      const voice = this.ctx.createGain();
+      voice.gain.value = level;
+      osc.connect(voice).connect(band);
+      osc.start(time);
+      osc.stop(time + duration + 0.1);
+    }
+    const pan = this.ctx.createStereoPanner();
+    pan.pan.value = -0.15;
+    band.connect(gain).connect(pan).connect(this.rhythmGain);
+    // La reponse part aussi dans la reverb : elle doit sonner dans le meme
+    // espace que le drone, pas coller a l'oreille.
+    gain.connect(this.reverbGain);
+  }
+
   /** Bref eclat sur une attaque : rend audible le fait que l'analyse entend. */
   spark(freq, velocity) {
     const time = this.ctx.currentTime;
@@ -1268,7 +1484,12 @@ const ui = {
   onsetCount: document.getElementById("onset-count"),
   chroma: document.getElementById("chroma"),
   chords: document.getElementById("chords"),
+  chordsCard: document.getElementById("chords").parentElement,
+  lead: document.getElementById("lead"),
   decision: document.getElementById("decision"),
+  presenceBar: document.getElementById("presence-bar"),
+  presenceVal: document.getElementById("presence-val"),
+  wake: document.getElementById("wake"),
   nextChord: document.getElementById("next-chord"),
   chordBar: document.getElementById("chord-bar"),
   selfBar: document.getElementById("self-bar"),
@@ -1308,7 +1529,8 @@ const app = {
   ctx: null, synth: null, source: null, stream: null,
   chromaAnalyser: null, onsetAnalyser: null, levelAnalyser: null,
   bank: null, tracker: null, onsetDetector: null, energy: null,
-  selfListen: null, harmony: null, chord: null, droneHz: null,
+  selfListen: null, harmony: null, conversation: null, chord: null, droneHz: null,
+  responseNotes: [], wakeLock: null,
   running: false, lastTime: 0, onsetTotal: 0, lastOnsetAt: -1,
   density: 0, level: 0, nextStepTime: 0, stepIndex: 0, rafId: null, timerId: null,
   // Ecart entre l'horloge audio et celle de l'analyse, plus la latence de
@@ -1429,6 +1651,11 @@ async function start(mode) {
     CONFIG.key.fminHz, CONFIG.key.fmaxHz);
   app.harmony = CONFIG.harmony.enabled
     ? new HarmonyDirector(CONFIG.harmony, CONFIG.rhythm.steps) : null;
+  // Qui mene, a cet instant : la grille d'accords et la densite rythmique en
+  // dependent toutes les deux, c'est la meme decision.
+  app.conversation = CONFIG.conversation.enabled
+    ? new Conversation(CONFIG.conversation, CONFIG.harmony.agency) : null;
+  app.responseNotes = [];
   app.chord = null;
   app.droneHz = null;
   app.outputLatency = ctx.outputLatency || ctx.baseLatency || 0.02;
@@ -1454,6 +1681,8 @@ async function start(mode) {
   app.running = true;
 
   document.getElementById("btn-stop").disabled = false;
+  // Une jam ne s'interrompt pas parce que le telephone s'ennuie.
+  holdScreenAwake();
   app.rafId = requestAnimationFrame(analysisTick);
   // Sequenceur a anticipation : la grille est posee sur l'horloge audio, donc
   // a l'echantillon pres, meme si la boucle d'analyse a de la gigue.
@@ -1509,10 +1738,12 @@ function analysisTick() {
   // --- attaques
   let onset = app.onsetDetector.process(
     magOnset.lin, now, dt, app.selfListen.thresholdScale(now));
-  if (onset && !app.selfListen.playing) {
-    // Le niveau dit que personne ne joue : ce qui a franchi le seuil est une
-    // crete du drone, pas une attaque. Sans ce garde-fou, l'appli s'excite sur
-    // son propre rythme.
+  const muted = app.selfListen.muted;
+  if (onset && (muted || !app.selfListen.playing)) {
+    // Soit l'appli joue ses propres notes, soit le niveau dit que personne ne
+    // joue et ce qui a franchi le seuil est une crete du drone. Dans les deux
+    // cas ce n'est pas une attaque : sans ce garde-fou, l'appli s'excite sur
+    // elle-meme.
     onset = null;
   }
   if (onset) {
@@ -1525,24 +1756,33 @@ function analysisTick() {
   }
 
   // --- energie et densite
-  app.density = app.energy.update(playRms, onset ? 1 : 0, dt);
+  // On ne s'ecoute pas parler : pendant une phrase de reponse, l'energie garde
+  // sa valeur au lieu d'enregistrer ce que l'appli vient d'emettre.
+  app.density = muted ? app.energy.density() : app.energy.update(playRms, onset ? 1 : 0, dt);
   app.level = app.energy.level;
+
+  // --- a qui est le tour
+  if (app.conversation && !muted) {
+    app.conversation.observe(app.density, now);
+    if (app.harmony) app.harmony.agency = app.conversation.agency();
+  }
 
   // --- chroma et tonalite
   const chroma = chromaFromMagnitudes(app.bank, cleanChroma);
   // Tant que l'auto-ecoute se cale, on ne donne rien au suiveur : sinon
   // l'appli s'accorderait sur son propre drone dans la demi-seconde qui suit
   // le demarrage, et n'en bougerait plus.
-  const key = (app.selfListen.playing && !app.selfListen.warming)
+  const key = (app.selfListen.playing && !app.selfListen.warming && !muted)
     ? app.tracker.update(chroma, playRms, now, dt)
     : app.tracker.key;
   if (key && !sameKey(key, app.currentKey)) {
     app.currentKey = { tonic: key.tonic, mode: key.mode };
     app.synth.setKey(rootHz(key, CONFIG.drone.octave), key.mode, CONFIG.drone.glideS);
   }
-  if (app.harmony) {
+  if (app.harmony && !muted) {
     app.harmony.observeChroma(chroma);
-    applyChordChange(app.harmony.observeKey(app.currentKey, currentStep()));
+    const step = currentStep();
+    applyChordChange(app.harmony.observeKey(app.currentKey, step), step);
   }
   app.synth.setLevel(app.level);
 
@@ -1561,14 +1801,37 @@ function currentStep() {
  * Applique un changement d'accord : le drone y glisse, et l'auto-ecoute est
  * prevenue de ce qu'elle devra retirer.
  */
-function applyChordChange(change) {
+function applyChordChange(change, step = 0) {
   if (!change || !app.synth) return;
+  planResponse(change.chord, step);
   const intervals = CHORD_INTERVALS[change.chord.quality];
   app.droneHz = voicedRootHz(change.chord.root, CONFIG.drone.octave, app.droneHz);
   app.chord = change.chord;
   app.lastDecision = change.decision;
   app.synth.setChord(app.droneHz, intervals, CONFIG.drone.glideS);
   if (app.selfListen.active) app.selfListen.setDrone(app.droneHz, intervals);
+}
+
+/** Prepare une phrase de reponse sur le nouvel accord, si c'est le tour. */
+function planResponse(chord, step) {
+  if (!app.conversation || !app.conversation.wantsResponse()) return;
+  const bar = Math.floor(step / CONFIG.rhythm.steps);
+  app.responseNotes = responsePhrase(chord, bar, CONFIG.conversation.responseOctave)
+    .map((note) => ({ ...note, at: step + note.step }));
+}
+
+/** Joue les notes de reponse qui tombent sur ce pas. */
+function playResponseAt(step, time) {
+  if (!app.responseNotes.length) return;
+  const duree = CONFIG.conversation.responseNoteS;
+  for (const note of app.responseNotes.filter((n) => n.at === step)) {
+    const freq = 440 * Math.pow(2, (note.midi - 69) / 12);
+    app.synth.pluck(time, freq, note.velocity, duree);
+    // Declaree avant d'etre emise : le temps qu'elle sonne, l'analyse se met
+    // en pause plutot que de prendre l'appli pour un musicien.
+    app.selfListen.noteVoice(time + app.clockOffset + app.outputLatency, duree);
+  }
+  app.responseNotes = app.responseNotes.filter((n) => n.at > step);
 }
 
 /** Pose les prochains pas de la grille sur l'horloge audio (anticipation). */
@@ -1589,24 +1852,28 @@ function scheduleRhythm() {
   while (app.nextStepTime < ctx.currentTime + lookahead) {
     const slot = app.stepIndex % cfg.steps;
     const step = Math.round((app.nextStepTime - app.startTime) / stepDuration);
-    if (app.harmony) applyChordChange(app.harmony.onStep(step));
-    const gated = app.density < cfg.gateDensity;
+    if (app.harmony) applyChordChange(app.harmony.onStep(step), step);
+    playResponseAt(step, app.nextStepTime);
+    // Le plancher de densite est ce qui empeche la percu d'abandonner des
+    // qu'on respire — et ce qui la releve quand c'est a l'appli de mener.
+    const density = app.conversation ? app.conversation.density(app.density) : app.density;
+    const gated = density < cfg.gateDensity;
     if (!gated) {
       const accent = slot % 4 === 0 ? 1.0 : 0.78;
       // Le dernier pas avant un changement d'accord est accentue : une grille
       // qui bouge sans prevenir ne se joue pas, un batteur l'annonce.
       const cue = app.harmony && app.harmony.stepsToChange(step) <= 1 ? 1.3 : 1.0;
-      const velocity = Math.min(1, 0.35 + 0.65 * app.density * cue) * accent;
+      const velocity = Math.min(1, 0.35 + 0.65 * density * cue) * accent;
       // Ce que l'appli emet, elle le declare : dans quelques millisecondes ce
       // sera dans le micro, et ca ne doit pas y passer pour une attaque.
       const heardAt = app.nextStepTime + app.clockOffset + app.outputLatency;
-      if (patternForVoice("kick", app.density, cfg)[slot]) {
+      if (patternForVoice("kick", density, cfg)[slot]) {
         const freq = (app.droneHz || (app.currentKey
           ? rootHz(app.currentKey, CONFIG.drone.octave) : 110)) / 2;
         app.synth.kick(app.nextStepTime, velocity, freq);
         app.selfListen.noteHit(heardAt);
       }
-      if (patternForVoice("perc", app.density, cfg)[slot]) {
+      if (patternForVoice("perc", density, cfg)[slot]) {
         app.synth.perc(app.nextStepTime, velocity, slot);
         app.selfListen.noteHit(heardAt);
       }
@@ -1635,13 +1902,18 @@ function render(chroma, now) {
   ui.confVal.textContent = conf.toFixed(2);
   ui.level.style.width = (app.level * 100).toFixed(0) + "%";
   ui.levelVal.textContent = app.level.toFixed(2);
-  ui.density.style.width = (app.density * 100).toFixed(0) + "%";
-  ui.densityVal.textContent = app.density.toFixed(2);
+  // La densite affichee est celle qui pilote reellement la grille, plancher
+  // compris : sinon le compteur dirait zero pendant que la percu joue.
+  const densiteJouee = app.conversation
+    ? app.conversation.density(app.density) : app.density;
+  ui.density.style.width = (densiteJouee * 100).toFixed(0) + "%";
+  ui.densityVal.textContent = densiteJouee.toFixed(2);
 
   ui.onsetCount.textContent = String(app.onsetTotal);
   ui.onsetLed.classList.toggle("on", now - app.lastOnsetAt < 0.12);
 
   renderHarmony();
+  renderLead(now);
 
   const retire = app.selfListen ? app.selfListen.removedRatio : 0;
   ui.selfBar.style.width = (retire * 100).toFixed(0) + "%";
@@ -1660,9 +1932,10 @@ function render(chroma, now) {
   });
 
   const slot = app.playSlot ?? -1;
+  const played = app.conversation ? app.conversation.density(app.density) : app.density;
   for (const voice of ["kick", "perc"]) {
-    const pattern = patternForVoice(voice, app.density, CONFIG.rhythm);
-    const gated = app.density < CONFIG.rhythm.gateDensity;
+    const pattern = patternForVoice(voice, played, CONFIG.rhythm);
+    const gated = played < CONFIG.rhythm.gateDensity;
     stepCells[voice].forEach((cell, i) => {
       cell.classList.toggle("on", pattern[i] && !gated);
       cell.classList.toggle("play", i === slot);
@@ -1676,6 +1949,7 @@ function renderHarmony() {
   const director = app.harmony;
   if (!director || !director.progression.length) {
     if (ui.chords.childElementCount) ui.chords.replaceChildren();
+    ui.chords.dataset.grid = "";
     ui.nextChord.textContent = "—";
     ui.chordBar.style.width = "0%";
     ui.decision.textContent = "—";
@@ -1706,12 +1980,63 @@ function renderHarmony() {
   ui.decision.className = "badge " + director.lastDecision;
 }
 
+/** A qui est le tour — la question qu'on se pose en permanence dans une jam. */
+function renderLead(now) {
+  const conv = app.conversation;
+  const presence = conv ? conv.presence : 0;
+  ui.presenceBar.style.width = (Math.min(1, presence) * 100).toFixed(0) + "%";
+  ui.presenceVal.textContent = presence.toFixed(2);
+  ui.lead.textContent = conv && conv.leads ? "à moi" : "à vous";
+  ui.lead.className = "badge " + (conv && conv.leads ? "app" : "player");
+  // La carte s'allume pendant que l'appli repond : on voit qui parle.
+  ui.chordsCard.classList.toggle(
+    "answering", !!(app.responseNotes && app.responseNotes.length));
+}
+
+/**
+ * Empeche le telephone de se verrouiller pendant l'ecoute.
+ *
+ * Le verrou est relache par le systeme des que la page passe en arriere-plan :
+ * il faut donc le reprendre au retour, pas seulement le demander une fois.
+ */
+async function holdScreenAwake() {
+  if (!("wakeLock" in navigator)) {
+    ui.wake.textContent = "veille : à désactiver à la main (verrouillage auto)";
+    ui.wake.classList.remove("on");
+    return false;
+  }
+  try {
+    app.wakeLock = await navigator.wakeLock.request("screen");
+    app.wakeLock.addEventListener("release", () => { app.wakeLock = null; });
+    ui.wake.textContent = "veille : écran maintenu allumé";
+    ui.wake.classList.add("on");
+    return true;
+  } catch (err) {
+    ui.wake.textContent = "veille : refusée par le navigateur (" + err.name + ")";
+    ui.wake.classList.remove("on");
+    return false;
+  }
+}
+
+function releaseScreen() {
+  if (app.wakeLock) { app.wakeLock.release().catch(() => {}); app.wakeLock = null; }
+  ui.wake.textContent = "veille : écran non maintenu";
+  ui.wake.classList.remove("on");
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && app.running && !app.wakeLock) {
+    holdScreenAwake();
+  }
+});
+
 function listeningMode() {
   return document.getElementById("listening").value;
 }
 
 function stop() {
   app.running = false;
+  releaseScreen();
   if (app.rafId) cancelAnimationFrame(app.rafId);
   if (app.timerId) clearInterval(app.timerId);
   if (app.synth) app.synth.stop();
@@ -1720,7 +2045,9 @@ function stop() {
   if (app.ctx) { app.ctx.close(); app.ctx = null; }
   app.currentKey = null;
   app.harmony = null;
+  app.conversation = null;
   app.selfListen = null;
+  app.responseNotes = [];
   app.chord = null;
   app.droneHz = null;
   renderHarmony();
@@ -1744,6 +2071,9 @@ document.getElementById("bpm").addEventListener("input", (e) => {
 document.getElementById("agency").addEventListener("input", (e) => {
   CONFIG.harmony.agency = Number(e.target.value) / 100;
   document.getElementById("agency-val").textContent = e.target.value;
+  // Le curseur est une *disposition* : il change la facon dont le lead
+  // circule, pas seulement l'accord suivant.
+  if (app.conversation) app.conversation.baseAgency = CONFIG.harmony.agency;
 });
 document.getElementById("listening").addEventListener("change", () => {
   // Le mode d'ecoute change les contraintes du micro : il ne peut s'appliquer
@@ -1767,6 +2097,7 @@ window.HALJ = {
   buildChromaFilterbank, chromaFromMagnitudes,
   OnsetDetector, EnergyTracker, karplusStrong, app,
   FloorFollower, SelfListen, dronePartials,
+  Conversation, responsePhrase, RESPONSE_CONTOURS, RESPONSE_POSITIONS,
   HarmonyDirector, DEGREES, PROGRESSIONS, CHORD_INTERVALS,
   chordFromDegree, progressionFor, chordScore, chordName, chordPitchClasses,
   voicedRootHz,
