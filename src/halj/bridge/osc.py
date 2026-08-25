@@ -10,6 +10,8 @@ Protocole (prefixe configurable, /jam par defaut) :
     /jam/key    tonic:int(0-11) mode:str("maj"|"min") root_hz:float conf:float
     /jam/chord  root:int(0-11) quality:str("maj"|"min"|"sus4") root_hz:float
                 decision:str("lead"|"follow"|"anchor")
+    /jam/note   freq:float velocity:float duration:float
+    /jam/lead   who:str("player"|"app")
     /jam/energy level:float density:float
     /jam/onset  strength:float
     /jam/kick   velocity:float step:int
@@ -100,6 +102,7 @@ class JamBridge:
         self.energy_epsilon = energy_epsilon
         self._last_key: Key | None = None
         self._last_chord: tuple[int, str, int] | None = None
+        self._last_lead: str | None = None
         self._last_level: float | None = None
         self._last_density: float | None = None
 
@@ -144,6 +147,25 @@ class JamBridge:
             float(root_hz),
             str(decision),
         )
+        return True
+
+    def send_note(self, freq_hz: float, velocity: float, duration_s: float) -> None:
+        """Une note de la phrase de reponse — l'appli qui prend la parole."""
+        self.sink.send(
+            self._address("note"),
+            float(freq_hz),
+            float(velocity),
+            float(duration_s),
+        )
+
+    def send_lead(self, who: str) -> bool:
+        """Annonce a qui est le tour. N'emet que sur changement."""
+        if who not in ("player", "app"):
+            raise ValueError(f"meneur inconnu : {who}")
+        if who == self._last_lead:
+            return False
+        self._last_lead = who
+        self.sink.send(self._address("lead"), str(who))
         return True
 
     def send_energy(self, level: float, density: float, force: bool = False) -> bool:

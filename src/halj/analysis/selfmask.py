@@ -197,6 +197,7 @@ class SelfListen:
         self.quiet = True
         self._settled = False
         self._frozen_until = -float("inf")
+        self._muted_until = -float("inf")
         self._time_s = 0.0
         self.removed_ratio = 0.0
         # Tant que l'appli n'a rien declare jouer, toutes les corrections sont
@@ -261,6 +262,24 @@ class SelfListen:
         """Signale un impact rythmique emis, date sur l'horloge de l'analyse."""
         self._hits.append(time_s + self.config.hit_latency_s)
 
+    def note_voice(self, time_s: float, duration_s: float) -> None:
+        """Declare une note que l'appli joue elle-meme dans la bande analysee.
+
+        Le plancher ne peut rien contre elle : une phrase de reponse est
+        transitoire, exactement comme du jeu, et rien dans le signal ne
+        permettrait de les distinguer. La seule parade honnete est de suspendre
+        l'analyse le temps que ca sonne — on ne s'ecoute pas parler.
+        """
+        self._hits.append(time_s + self.config.hit_latency_s)
+        self._muted_until = max(
+            self._muted_until, time_s + self.config.hit_latency_s + duration_s
+        )
+
+    @property
+    def muted(self) -> bool:
+        """L'appli est en train de jouer ses propres notes : elle n'ecoute pas."""
+        return self.active and self._time_s < self._muted_until
+
     def note_onset(self, time_s: float) -> None:
         """Signale une attaque detectee : elle gele la mesure du plancher.
 
@@ -281,6 +300,7 @@ class SelfListen:
         self.quiet = True
         self._settled = False
         self._frozen_until = -float("inf")
+        self._muted_until = -float("inf")
         self._time_s = 0.0
         self.removed_ratio = 0.0
         self.active = False

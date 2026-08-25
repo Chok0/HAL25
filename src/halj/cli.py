@@ -77,6 +77,15 @@ def _add_common_args(cmd: argparse.ArgumentParser) -> None:
         help="coupe la grille d'accords : le drone tient la tonalite detectee",
     )
     cmd.add_argument(
+        "--no-conversation",
+        action="store_true",
+        help=(
+            "le lead ne circule plus : l'appli garde l'initiative fixee par "
+            "--agency au lieu de la prendre et de la rendre selon la place "
+            "laissee par le jeu"
+        ),
+    )
+    cmd.add_argument(
         "--no-self-listen",
         action="store_true",
         help=(
@@ -151,12 +160,17 @@ def _resolve_config(args: argparse.Namespace) -> Config:
     if getattr(args, "no_self_listen", False):
         self_listen = replace(self_listen, enabled=False)
 
+    conversation = config.conversation
+    if getattr(args, "no_conversation", False):
+        conversation = replace(conversation, enabled=False)
+
     return config.with_overrides(
         osc=osc,
         rhythm=rhythm,
         audio=audio,
         harmony=harmony,
         self_listen=self_listen,
+        conversation=conversation,
     )
 
 

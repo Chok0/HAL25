@@ -189,6 +189,9 @@ class HarmonyDirector:
     def __init__(self, config: HarmonyConfig, steps_per_bar: int = 16):
         self.config = config
         self.steps_per_bar = steps_per_bar
+        # Initiative *du moment* : `generative/conversation.py` la fait varier
+        # selon a qui est le tour. Sans lui, elle reste celle du reglage.
+        self.agency = config.agency
         self.key: Key | None = None
         self.progression: list[Chord] = []
         self.position = 0
@@ -198,6 +201,7 @@ class HarmonyDirector:
         self._loops = 0
         self._vote = [0.0] * 12
         self._next_change_step = 0
+        self.agency = self.config.agency
 
     @property
     def steps_per_chord(self) -> int:
@@ -291,7 +295,7 @@ class HarmonyDirector:
         return change
 
     def _decide(self, step_index: int) -> ChordChange:
-        agency = min(1.0, max(0.0, self.config.agency))
+        agency = min(1.0, max(0.0, self.agency))
         if agency <= 0.0 or not self.progression:
             # Suiveur pur : la triade de la tonalite, rien d'autre.
             self.chord = chord_from_degree(self.key, self._tonic_degree())

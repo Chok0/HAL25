@@ -38,6 +38,8 @@ class AnalysisFrame:
     play_rms: float = 0.0
     # Part de l'energie spectrale attribuee a l'auto-ecoute, [0, 1].
     self_removed: float = 0.0
+    # L'appli jouait ses propres notes : cette trame n'apprend rien.
+    muted: bool = False
 
 
 class AnalysisEngine:
@@ -97,6 +99,15 @@ class AnalysisEngine:
         """Declare un impact rythmique emis, pour ne pas le compter en attaque."""
         self.self_listen.note_hit(time_s)
 
+    def note_self_voice(self, time_s: float, duration_s: float) -> None:
+        """Declare une note jouee par l'appli dans la bande analysee.
+
+        Contrairement a un impact, elle ne peut pas simplement etre filtree :
+        elle est transitoire et melodique, donc indistinguable du jeu. L'analyse
+        se met en pause le temps qu'elle sonne.
+        """
+        self.self_listen.note_voice(time_s, duration_s)
+
     def process_block(self, block: np.ndarray) -> list[AnalysisFrame]:
         """Consomme un bloc d'echantillons mono, rend une trame par hop complet.
 
@@ -130,15 +141,22 @@ class AnalysisEngine:
             time_s,
             threshold_scale=self.self_listen.threshold_scale(time_s),
         )
-        if onset is not None and not self.self_listen.playing:
-            # Le niveau dit que personne ne joue : ce qui a franchi le seuil est
-            # une crete du battement du drone, pas une attaque. Sans ce
-            # garde-fou, l'appli s'excite sur son propre rythme.
+        muted = self.self_listen.muted
+        if onset is not None and (muted or not self.self_listen.playing):
+            # Soit l'appli est en train de jouer ses propres notes, soit le
+            # niveau dit que personne ne joue et ce qui a franchi le seuil est
+            # une crete du battement du drone. Dans les deux cas, ce n'est pas
+            # une attaque : sans ce garde-fou, l'appli s'excite sur elle-meme.
             onset = None
         if onset is not None:
             self.self_listen.note_onset(onset.time_s)
 
-        density = self.energy.update(play_rms, onset_count=1 if onset else 0)
+        if muted:
+            # On ne s'ecoute pas parler : l'energie garde sa valeur au lieu
+            # d'enregistrer la phrase que l'appli vient d'emettre.
+            density = self.energy.density
+        else:
+            density = self.energy.update(play_rms, onset_count=1 if onset else 0)
 
         chroma: np.ndarray | None = None
         if self._hop_index % self.config.key.decimation == 0:
@@ -156,7 +174,7 @@ class AnalysisEngine:
             # etre reconnu comme tel. Et tant que l'auto-ecoute se cale, on ne
             # lui donne rien : sinon l'appli s'accorderait sur elle-meme dans
             # la demi-seconde qui suit le demarrage, et n'en bougerait plus.
-            if self.self_listen.playing and not self.self_listen.warming:
+            if self.self_listen.playing and not (self.self_listen.warming or muted):
                 self.key_tracker.update(chroma, play_rms)
 
         return AnalysisFrame(
@@ -170,4 +188,5 @@ class AnalysisEngine:
             chroma=chroma,
             play_rms=play_rms,
             self_removed=self.self_listen.removed_ratio,
+            muted=muted,
         )

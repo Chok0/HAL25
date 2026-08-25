@@ -17,8 +17,10 @@ from .analysis.engine import AnalysisEngine, AnalysisFrame
 from .audio.sources import AudioSource
 from .bridge.osc import JamBridge
 from .config import Config
+from .generative.conversation import Conversation, ResponseNote, response_phrase
 from .generative.harmony import HarmonyDirector, voiced_root_hz
 from .generative.scheduler import RhythmScheduler
+from .notes import midi_to_hz
 from .ui.terminal import TerminalDisplay
 
 
@@ -30,6 +32,8 @@ class SessionStats:
     onsets: int = 0
     key_changes: int = 0
     chord_changes: int = 0
+    lead_changes: int = 0
+    response_notes: int = 0
     hits: dict[str, int] = field(default_factory=lambda: {"kick": 0, "perc": 0})
     duration_s: float = 0.0
     wall_time_s: float = 0.0
@@ -47,6 +51,8 @@ class SessionStats:
             f"(x{self.realtime_factor:.1f} temps reel) | "
             f"{self.onsets} attaques | {self.key_changes} changements de tonalite | "
             f"{self.chord_changes} accords | "
+            f"{self.lead_changes} passages de main, {self.response_notes} notes "
+            f"de reponse | "
             f"{self.hits['kick']} kicks, {self.hits['perc']} percus"
         )
 
@@ -89,10 +95,18 @@ class JamSession:
             if config.harmony.enabled and enable_drone
             else None
         )
+        # Qui mene, a cet instant. La grille d'accords et la densite rythmique
+        # en dependent toutes les deux : c'est la meme decision.
+        self.conversation = (
+            Conversation(config.conversation, config.harmony.agency)
+            if config.conversation.enabled and enable_drone
+            else None
+        )
         self.stats = SessionStats()
         self._stop = False
         self._last_key = None
         self._drone_root_hz: float | None = None
+        self._pending_notes: list[tuple[float, ResponseNote]] = []
 
     def stop(self) -> None:
         """Demande l'arret ; la boucle sort a la fin du bloc courant."""
@@ -143,10 +157,12 @@ class JamSession:
                 self.bridge.send_key(frame.key, frame.key_confidence)
             self.bridge.send_energy(frame.level, frame.density)
 
+        self._advance_conversation(frame)
         self._advance_harmony(frame)
+        self._emit_response(frame)
 
         if self.enable_rhythm:
-            self.scheduler.set_density(frame.density)
+            self.scheduler.set_density(self._played_density(frame.density))
             for event in self.scheduler.advance(frame.time_s):
                 self.stats.hits[event.voice] += 1
                 # Declare l'impact au moteur d'analyse : dans une seconde il
@@ -163,7 +179,56 @@ class JamSession:
                 frame,
                 self.scheduler if self.enable_rhythm else None,
                 harmony=self.harmony,
+                conversation=self.conversation,
             )
+
+    # -- a qui est le tour ----------------------------------------------
+
+    def _advance_conversation(self, frame: AnalysisFrame) -> None:
+        """Met a jour le meneur du moment, et ce qui en decoule."""
+        if self.conversation is None:
+            return
+        # Une trame ou l'appli s'entendait parler ne dit rien du jeu : la
+        # compter ferait croire que l'instrumentiste occupe le terrain.
+        if not frame.muted:
+            change = self.conversation.observe(frame.density, frame.time_s)
+            if change is not None:
+                self.stats.lead_changes += 1
+                if self.bridge:
+                    self.bridge.send_lead(change)
+        if self.harmony is not None:
+            self.harmony.agency = self.conversation.agency()
+
+    def _played_density(self, measured: float) -> float:
+        """La densite reellement jouee : mesuree, avec le plancher du moment."""
+        if self.conversation is None:
+            return measured
+        return self.conversation.density(measured)
+
+    def _emit_response(self, frame: AnalysisFrame) -> None:
+        """Emet les notes de la phrase de reponse arrivees a echeance."""
+        while self._pending_notes and self._pending_notes[0][0] <= frame.time_s:
+            time_s, note = self._pending_notes.pop(0)
+            duree = self.config.conversation.response_note_s
+            # Declaree avant d'etre emise : le temps qu'elle sonne, l'analyse
+            # se met en pause plutot que de prendre l'appli pour un musicien.
+            self.engine.note_self_voice(frame.time_s, duree)
+            self.stats.response_notes += 1
+            if self.bridge:
+                self.bridge.send_note(midi_to_hz(note.midi), note.velocity, duree)
+
+    def _plan_response(self, chord, step_index: int) -> None:
+        """Prepare une phrase de reponse sur le nouvel accord, si c'est le tour."""
+        if self.conversation is None or not self.conversation.wants_response():
+            return
+        bar = step_index // max(1, self.config.rhythm.steps)
+        step_s = self.scheduler.step_duration
+        self._pending_notes = [
+            (max(0.0, (step_index + note.step) * step_s), note)
+            for note in response_phrase(
+                chord, bar, self.config.conversation.response_octave
+            )
+        ]
 
     # -- grille d'accords ----------------------------------------------
 
@@ -192,6 +257,7 @@ class JamSession:
             return
 
         self.stats.chord_changes += 1
+        self._plan_response(change.chord, step)
         root_hz = voiced_root_hz(
             change.chord.root, self.config.drone.octave, self._drone_root_hz
         )

@@ -207,6 +207,41 @@ def test_les_impacts_passes_sont_oublies(guard):
     assert len(guard._hits) <= 2
 
 
+def test_l_appli_n_ecoute_pas_pendant_qu_elle_joue(guard, config):
+    """Une phrase de reponse est transitoire et melodique : rien ne la
+    distinguerait du jeu. La seule parade honnete est de se taire."""
+    guard.set_drone(110.0, (0,))
+    assert not guard.muted
+
+    guard.note_voice(1.0, duration_s=0.35)
+    latence = config.self_listen.hit_latency_s
+    # A l'attaque, le seuil monte comme pour un impact...
+    assert guard.threshold_scale(1.0 + latence + 0.05) > 1.0
+    assert guard.muted
+    # ...et le silence d'ecoute dure tant que la note sonne.
+    guard.threshold_scale(1.0 + latence + 0.3)
+    assert guard.muted
+    guard.threshold_scale(1.0 + latence + 0.5)
+    assert not guard.muted
+
+
+def test_une_analyse_muette_ne_nourrit_ni_la_tonalite_ni_l_energie(config):
+    """Le bout de la chaine : ce que l'appli joue ne doit rien lui apprendre."""
+    sr = config.audio.samplerate
+    engine = AnalysisEngine(config)
+    engine.set_self_drone(110.0, (0, 3, 7))
+    melodie = _melodie(GAMME_DE_DO, sr)
+
+    # On declare toute la duree comme jouee par l'appli elle-meme.
+    for depart in np.arange(0.0, len(melodie) / sr, 0.3):
+        engine.note_self_voice(float(depart), 0.35)
+    frames = engine.process_block(melodie)
+
+    assert all(f.muted for f in frames[len(frames) // 2 :])
+    assert frames[-1].key is None  # rien appris
+    assert frames[-1].level == 0.0  # ni entendu
+
+
 # --- la boucle complete -----------------------------------------------
 
 

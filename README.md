@@ -4,9 +4,11 @@ Une appli qui écoute la guitare en train d'être jouée et génère en live un
 accompagnement : un **drone dark qui déroule une grille d'accords** ancrée sur
 la tonalité détectée, et une **couche rythmique kick/percu réactive au jeu**.
 
-Elle sait aussi **s'ignorer elle-même** : joué sur haut-parleur, un téléphone
-réentend son propre drone, et sans précaution c'est lui — pas l'instrument —
-qui finit par décider de la tonalité.
+Elle sait aussi **s'ignorer elle-même** — joué sur haut-parleur, un téléphone
+réentend son propre drone, et sans précaution c'est lui, pas l'instrument, qui
+finit par décider de la tonalité — et **se passer le lead** : quand vous
+laissez la place, elle la prend, relance le rythme et répond par une phrase ;
+quand vous relancez, elle se range.
 
 Tout tourne en local, aucun traitement cloud.
 
@@ -45,9 +47,15 @@ Deux réglages décident du comportement :
   il dispose du signal de sortie et de l'horloge matérielle, ce que la page n'a
   pas. Au casque, l'annulateur reste coupé : conçu pour la voix, il écraserait
   la dynamique de l'instrument.
-- **initiative.** À gauche, l'appli suit la tonalité détectée comme un
-  accompagnateur discret. À droite, elle déroule sa grille et ne cède plus. Au
-  milieu, elle propose et vous laisse la détourner.
+- **initiative.** Ce n'est pas un état mais une *disposition* : à gauche
+  l'appli n'ose jamais prendre la main, à droite elle ne la rend jamais, et
+  entre les deux le lead circule — d'autant plus vite qu'il est haut. Le badge
+  **à vous / à moi** dit à qui est le tour à cet instant.
+
+L'écran ne se verrouille pas pendant l'écoute : la page demande un *wake lock*
+et le reprend au retour d'arrière-plan. Si le navigateur ne connaît pas cette
+API (iOS avant 16.4), elle le dit au lieu de faire semblant — il faut alors
+désactiver le verrouillage automatique à la main.
 
 ### Publier sur GitHub Pages
 
@@ -125,8 +133,8 @@ halj jam --source mic          # drone + rythme
 
 Options utiles : `--source mic|file|synth`, `--input prise.wav`, `--bpm`,
 `--agency 0..1`, `--osc-port`, `--duration`, `--config config.json`,
-`--no-harmony`, `--no-self-listen`, `--no-pacing` (analyse un fichier à pleine
-vitesse au lieu du temps réel).
+`--no-harmony`, `--no-self-listen`, `--no-conversation`, `--no-pacing` (analyse
+un fichier à pleine vitesse au lieu du temps réel).
 
 `halj mock` répond directement au risque identifié au cadrage — l'overhead du
 setup cross-process. Il permet de développer tout le patch SuperCollider sans
@@ -143,6 +151,7 @@ micro, sans guitare et sans que l'analyse soit finie.
 | Auto-écoute | plancher glissant : ce qui ne bouge pas, c'est nous | `analysis/selfmask.py` |
 | Rythme | motifs euclidiens (Bjorklund) pilotés par la densité | `generative/` |
 | Accords | grille en degrés, avancée à la mesure, cède si le jeu insiste | `generative/harmony.py` |
+| Tour de parole | présence du jeu → qui mène, densité plancher, phrase de réponse | `generative/conversation.py` |
 
 **Un seul pipeline chroma gère accords et notes seules.** Le chroma replie les
 octaves, donc une note isolée et l'accord qui la contient nourrissent le même
@@ -265,8 +274,12 @@ Un seul réglage, `agency` (`--agency`, ou le curseur *initiative* dans la page)
 | valeur | comportement |
 |---|---|
 | `0` | suiveur pur : l'accord est la triade de la tonalité détectée, comme avant ce module |
-| `0.5` | conversation : l'appli déroule sa grille, mais cède dès que le jeu désigne clairement un autre accord |
+| `0.5` | l'appli déroule sa grille, mais cède dès que le jeu désigne clairement un autre accord |
 | `1` | meneur : la grille tient bon, quoi que joue l'instrumentiste |
+
+Ce réglage donne la *disposition*, pas l'état : l'initiative réellement
+appliquée à chaque instant est celle que décide le tour de parole (section
+suivante) — haute quand l'appli a la main, basse quand elle accompagne.
 
 Le vote du joueur est lu dans le chroma accumulé depuis le dernier changement :
 la masse tombant dans l'accord, plus un bonus sur la fondamentale. Ce bonus
@@ -289,6 +302,50 @@ Trois détails font la différence entre une grille et une grille jouable :
   accentué, et la page affiche l'accord suivant avec le temps qu'il reste : une
   grille qui bouge sans prévenir ne se joue pas.
 
+## À qui est le tour
+
+Un accompagnement à initiative fixe fait la moitié du chemin : il suit bien, ou
+il mène bien, mais il ne *répond* pas. On joue devant lui, pas avec lui. Or
+dans une jam le lead n'est jamais tranché une fois pour toutes — il circule, et
+il circule par la place qu'on laisse.
+
+`generative/conversation.py` mesure cette place et tranche en continu :
+
+| ce que fait l'instrumentiste | ce que fait l'appli |
+|---|---|
+| il occupe le terrain | elle accompagne, se range derrière la tonalité qu'il impose, tient un fond rythmique discret |
+| il laisse un blanc | elle prend la main : elle tient sa grille, **relance la densité** au lieu de la laisser retomber, et **répond** par une phrase |
+
+Quatre choix font la différence entre un partenaire et un métronome :
+
+- **la reprise est plus rapide que la prise.** L'appli met de trois à huit
+  secondes à s'autoriser à mener — selon l'initiative — et rend la main en une
+  seconde. Un partenaire qui n'écoute pas est pire qu'un partenaire muet.
+- **les seuils sont relatifs, jamais absolus.** Une ligne mélodique sur un
+  petit instrument à cordes et un accompagnement gratté au médiator couvrent
+  plus d'un ordre de grandeur de densité. Un seuil fixe conclurait « il ne joue
+  plus » chez l'un et « il n'arrête jamais » chez l'autre : la référence est
+  donc la présence *typique* du joueur, tenue par un suiveur qui monte au
+  rythme du jeu et redescend en une minute.
+- **la percussion n'abandonne jamais tout à fait.** C'était le symptôme de
+  départ : la couche rythmique s'éteignait au premier blanc. Elle est censée
+  motiver le jeu ; si elle disparaît dès qu'on respire, elle motive un silence.
+  Elle a donc un plancher — bas quand l'appli accompagne, franchement plus haut
+  quand elle mène, parce qu'une relance qui n'insiste pas n'est pas une
+  relance.
+- **quand elle parle, elle n'écoute pas.** Une phrase de réponse tombe dans la
+  bande analysée et elle est transitoire, exactement comme du jeu : aucun
+  plancher ne saurait l'en distinguer. L'appli suspend donc son analyse le
+  temps que ses propres notes sonnent — on ne s'écoute pas parler. Sans cette
+  pause, elle entendrait sa réponse, en conclurait que quelqu'un joue, et se
+  rendrait la main à elle-même.
+
+La réponse est jouée dans le **registre médian** (octave 4 par défaut), et ce
+n'est pas un détail de goût : c'est la bande qu'un haut-parleur de téléphone
+reproduit réellement, là où il ne rend à peu près rien du drone. C'est donc ce
+que l'instrumentiste entend en premier — ce qui tombe bien, puisque c'est ce
+qui doit lui donner envie de répondre à son tour.
+
 ## Protocole OSC
 
 Python envoie, SuperCollider reçoit (port 57120, préfixe `/jam` configurable) :
@@ -298,6 +355,8 @@ Python envoie, SuperCollider reçoit (port 57120, préfixe `/jam` configurable) 
 | `/jam/drone` | `amp` `glide` | démarre / reconfigure le drone |
 | `/jam/key` | `tonic` (0-11) `mode` (`maj`/`min`) `root_hz` `confidence` | tonalité détectée |
 | `/jam/chord` | `root` (0-11) `quality` `root_hz` `decision` | accord tenu par le drone, et qui l'a décidé |
+| `/jam/note` | `freq` `velocity` `duration` | une note de la phrase de réponse |
+| `/jam/lead` | `who` (`player`/`app`) | à qui est le tour, émis sur changement |
 | `/jam/energy` | `level` `density` | niveau de jeu et densité rythmique |
 | `/jam/onset` | `strength` | une attaque vient d'être détectée |
 | `/jam/kick` / `/jam/perc` | `velocity` `step` | impact de la grille |
@@ -316,7 +375,8 @@ une par une). Pour surcharger, un JSON partiel suffit :
   "rhythm": { "bpm": 96.0, "steps": 16 },
   "drone": { "amp": 0.4 },
   "harmony": { "agency": 0.8, "bars_per_chord": 2 },
-  "self_listen": { "enabled": true, "play_gate": 0.04 }
+  "self_listen": { "enabled": true, "play_gate": 0.04 },
+  "conversation": { "follow_density": 0.25, "respond_every_bars": 3 }
 }
 ```
 
@@ -345,17 +405,19 @@ une prise enregistrée, pas à jouer en direct.
 pip install -e ".[dev]" && pytest
 ```
 
-308 tests, ~23 s, sans matériel audio. Ils couvrent les motifs euclidiens
+330 tests, ~25 s, sans matériel audio. Ils couvrent les motifs euclidiens
 (contre les valeurs de référence connues : tresillo, cinquillo…), la détection
 de tonalité, l'hystérésis, la détection d'attaques (jeu doux/fort, note tenue,
 rumble, temps mort), les filtres, le protocole OSC sur une vraie socket UDP, et
 la chaîne complète du signal jusqu'aux messages.
 
-L'auto-écoute et la grille d'accords sont testées sur ce qu'elles changent, pas
-sur leur mécanique : une ligne mélodique rejouée par-dessus un drone plus fort
-qu'elle doit rendre au joueur la majorité du chroma, un drone seul ne doit plus
-faire vivre le rythme, et le point de bascule entre mener et suivre doit tomber
-au même endroit des deux côtés du portage.
+L'auto-écoute, la grille d'accords et le tour de parole sont testés sur ce
+qu'ils changent, pas sur leur mécanique : une ligne mélodique rejouée par-dessus
+un drone plus fort qu'elle doit rendre au joueur la majorité du chroma, un drone
+seul ne doit plus faire vivre le rythme, la percussion ne doit jamais descendre
+sous le seuil qui la coupe, le lead ne doit pas clignoter quand la densité
+oscille autour du seuil, et les points de bascule — mener/suivre, prendre/rendre
+la main — doivent tomber au même endroit des deux côtés du portage.
 
 Les tests de parité web (`tests/test_web.py`) pilotent un Chromium sans
 interface ; ils sont ignorés si Playwright n'est pas installé :

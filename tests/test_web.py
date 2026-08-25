@@ -483,3 +483,109 @@ def test_les_constantes_d_auto_ecoute_sont_alignees(page, config):
     assert harmony["followMarginMax"] == config.harmony.follow_margin_max
     assert harmony["minVote"] == config.harmony.min_vote
     assert harmony["barsPerChord"] == config.harmony.bars_per_chord
+
+
+# --- parite de la conversation ----------------------------------------
+
+
+def test_les_phrases_de_reponse_sont_les_memes(page):
+    from halj.generative.conversation import response_phrase
+    from halj.generative.harmony import Chord
+
+    for root, quality in ((9, "min"), (5, "maj"), (7, "sus4")):
+        for bar in range(4):
+            attendu = [
+                {"step": n.step, "midi": n.midi, "velocity": n.velocity}
+                for n in response_phrase(Chord(root, quality), bar)
+            ]
+            obtenu = js(
+                page,
+                f"HALJ.responsePhrase({{root: {root}, quality: '{quality}'}}, {bar}, 4)",
+            )
+            assert obtenu == attendu
+
+
+def test_le_lead_bascule_au_meme_moment(page, config):
+    """Le coeur du comportement : quand l'appli prend la main, et quand elle la rend."""
+    from halj.generative.conversation import Conversation
+
+    pas, duree = 0.05, 40.0
+
+    def densite(time_s):
+        if time_s < 12.0:
+            return 0.35
+        return 0.0 if time_s < 26.0 else 0.35
+
+    attendu, conv, time_s = [], Conversation(config.conversation, 0.5), 0.0
+    for _ in range(int(duree / pas)):
+        time_s += pas
+        change = conv.observe(densite(time_s), time_s)
+        if change is not None:
+            attendu.append([change, round(time_s, 2)])
+
+    obtenu = js(
+        page,
+        f"""(() => {{
+            const conv = new HALJ.Conversation(HALJ.CONFIG.conversation, 0.5);
+            const out = [];
+            let t = 0;
+            for (let i = 0; i < {int(duree / pas)}; i++) {{
+                t += {pas};
+                const d = t < 12 ? 0.35 : (t < 26 ? 0 : 0.35);
+                const change = conv.observe(d, t);
+                if (change) out.push([change, Math.round(t * 100) / 100]);
+            }}
+            return out;
+        }})()""",
+    )
+    assert obtenu == attendu
+    assert [b[0] for b in attendu] == ["app", "player"]  # elle prend, puis elle rend
+
+
+def test_le_plancher_de_densite_est_le_meme(page, config):
+    from halj.generative.conversation import APP, Conversation
+
+    conv = Conversation(config.conversation, 0.5)
+    accompagne = conv.density(0.0)
+    conv.lead = APP
+    mene = conv.density(0.0)
+
+    obtenu = js(
+        page,
+        """(() => {
+            const conv = new HALJ.Conversation(HALJ.CONFIG.conversation, 0.5);
+            const accompagne = conv.density(0);
+            conv.lead = "app";
+            return [accompagne, conv.density(0), conv.density(0.9)];
+        })()""",
+    )
+    assert obtenu[0] == pytest.approx(accompagne)
+    assert obtenu[1] == pytest.approx(mene)
+    assert obtenu[2] == pytest.approx(0.9)  # ce qui est joue plus fort passe tel quel
+    # Et le fond ne descend jamais sous le seuil qui coupe la couche rythmique.
+    assert obtenu[0] > config.rhythm.gate_density
+
+
+def test_les_constantes_de_conversation_sont_alignees(page, config):
+    cfg = js(page, "HALJ.CONFIG")["conversation"]
+    attendu = config.conversation
+    assert cfg["presenceAttackS"] == attendu.presence_attack_s
+    assert cfg["presenceReleaseS"] == attendu.presence_release_s
+    assert cfg["engageS"] == attendu.engage_s
+    assert cfg["referenceReleaseS"] == attendu.reference_release_s
+    assert cfg["referenceFloor"] == attendu.reference_floor
+    assert cfg["freeRatioMin"] == attendu.free_ratio_min
+    assert cfg["freeRatioMax"] == attendu.free_ratio_max
+    assert cfg["hysteresisRatio"] == attendu.hysteresis_ratio
+    assert cfg["takeSMin"] == attendu.take_s_min
+    assert cfg["takeSMax"] == attendu.take_s_max
+    assert cfg["giveSMin"] == attendu.give_s_min
+    assert cfg["giveSMax"] == attendu.give_s_max
+    assert cfg["leadAgency"] == attendu.lead_agency
+    assert cfg["followAgency"] == attendu.follow_agency
+    assert cfg["followDensity"] == attendu.follow_density
+    assert cfg["leadDensityMin"] == attendu.lead_density_min
+    assert cfg["leadDensityMax"] == attendu.lead_density_max
+    assert cfg["respondEveryBars"] == attendu.respond_every_bars
+    assert cfg["responseOctave"] == attendu.response_octave
+    assert cfg["responseNoteS"] == attendu.response_note_s

@@ -80,6 +80,19 @@ s.waitForBoot({
         Out.ar(0, Pan2.ar(noise * env * 0.5, pan));
     }).add;
 
+    // Voix de reponse : l'appli qui prend la parole quand on lui laisse la
+    // place. Registre median a dessein — c'est celui qui passe reellement sur
+    // un petit haut-parleur, la ou le drone ne s'entend presque pas.
+    SynthDef(\jamPluck, { |freq = 440, velocity = 0.4, duration = 0.35|
+        var env, exciter, sig;
+        env = EnvGen.kr(Env.perc(0.004, duration, velocity, -4), doneAction: 2);
+        // Corde pincee : bruit court reinjecte dans un delai accorde.
+        exciter = WhiteNoise.ar(0.4) * EnvGen.kr(Env.perc(0.001, 0.006));
+        sig = CombL.ar(exciter, 0.05, freq.reciprocal, duration * 2.2);
+        sig = LPF.ar(sig, 2600) + (0.25 * SinOsc.ar(freq, 0, 0.2));
+        Out.ar(0, Pan2.ar(sig * env, Rand(-0.25, 0.25)));
+    }).add;
+
     // Marqueur d'attaque guitare : bref eclat harmonise avec le drone. Rend
     // audible le fait que l'analyse "entend" le jeu, sans surcharger le mix.
     SynthDef(\jamSpark, { |freq = 440, velocity = 0.3|
@@ -147,6 +160,19 @@ s.waitForBoot({
         };
         "chord -> % % (%.0f Hz, %)".format(msg[1], quality, hz, decision).postln;
     }, '/jam/chord');
+
+    // /jam/note <freq> <velocity> <duration> : une note de la phrase de reponse.
+    OSCdef(\jamNote, { |msg|
+        Synth(\jamPluck, [
+            \freq, msg[1] ? 440.0, \velocity, msg[2] ? 0.4, \duration, msg[3] ? 0.35
+        ]);
+    }, '/jam/note');
+
+    // /jam/lead <who> : a qui est le tour. Rien a jouer, mais tout a savoir
+    // quand on regle le patch — c'est la grandeur qui explique le reste.
+    OSCdef(\jamLead, { |msg|
+        "lead -> %".format(msg[1]).postln;
+    }, '/jam/lead');
 
     // /jam/energy <level> <density> : le niveau de jeu ouvre le filtre du drone.
     OSCdef(\jamEnergy, { |msg|
